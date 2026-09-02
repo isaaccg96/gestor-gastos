@@ -24,7 +24,11 @@ Esta guía documenta, paso a paso y en orden real, todo lo que se hizo para mont
 16. [El problema del error 401 y su solución](#16-el-problema-del-error-401-y-su-solución)
 17. [CRUD completo: crear, leer, editar y eliminar](#17-crud-completo-crear-leer-editar-y-eliminar)
 18. [Glosario de conceptos clave](#18-glosario-de-conceptos-clave)
-19. [Qué queda pendiente](#19-qué-queda-pendiente)
+19. [Resumen con agregaciones y gráficos (Recharts)](#19-resumen-con-agregaciones-y-gráficos-recharts)
+20. [Subida del proyecto a GitHub](#20-subida-del-proyecto-a-github)
+21. [Policies: seguridad entre usuarios](#21-policies-seguridad-entre-usuarios)
+22. [Glosario ampliado (segunda sesión)](#22-glosario-ampliado-segunda-sesión)
+23. [Qué queda pendiente](#23-qué-queda-pendiente)
 
 ---
 
@@ -1067,11 +1071,636 @@ Solo la fila cuyo ID coincidía con el guardado en el estado entraba en modo edi
 
 ---
 
-## 19. Qué queda pendiente
+## 19. Resumen con agregaciones y gráficos (Recharts)
 
-Anotado tal como se dejó al cierre de la sesión, sin desarrollar todavía:
+En una segunda sesión de trabajo se retomó el proyecto para añadir un resumen visual del gasto: total por categoría y total por mes, calculado directamente en la base de datos y mostrado con gráficos en React.
 
-1. **Policies de Laravel** — para impedir que un usuario autenticado pueda ver, editar o eliminar categorías o gastos que pertenecen a otro usuario (actualmente los controladores solo verifican que el registro exista, no que pertenezca al usuario autenticado).
-2. **Validación visual de errores** — mostrar en la interfaz los mensajes de error específicos que devuelve el backend cuando falla una validación (por ejemplo, si el monto queda vacío).
-3. **Un resumen o gráfico** — por ejemplo, total gastado por categoría o por mes, aprovechando las relaciones y agregaciones ya disponibles en el modelo de datos.
-4. **Subir el proyecto a GitHub**, con un `README.md` que explique cómo levantar el proyecto con Sail (`git clone` + `./vendor/bin/sail up`), pensado para que cualquiera pueda ejecutarlo sin más que tener Docker instalado.
+### Backend: controlador de resúmenes
+
+```bash
+./vendor/bin/sail artisan make:controller SummaryController
+```
+
+Contenido de `app/Http/Controllers/SummaryController.php`:
+
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class SummaryController extends Controller
+{
+    public function byCategory(Request $request)
+    {
+        return $request->user()
+            ->expenses()
+            ->selectRaw('category_id, SUM(amount) as total')
+            ->groupBy('category_id')
+            ->with('category:id,name')
+            ->get();
+    }
+
+    public function byMonth(Request $request)
+    {
+        return $request->user()
+            ->expenses()
+            ->selectRaw("DATE_FORMAT(date, '%Y-%m') as month, SUM(amount) as total")
+            ->groupBy('month')
+            ->orderBy('month')
+            ->get();
+    }
+}
+```
+
+**`selectRaw(...)`** — permite escribir una porción de SQL "en crudo" dentro de una consulta de Eloquent, necesario aquí porque se usa la función de agregación `SUM()`, que no tiene un atajo directo en la sintaxis normal de Eloquent.
+
+**`groupBy('category_id')`** — agrupa todos los gastos que compartan la misma categoría, de forma que `SUM(amount)` calcule el total dentro de cada grupo (es decir: "cuánto se ha gastado en total, por cada categoría").
+
+**`with('category:id,name')`** — trae también el nombre de cada categoría relacionada, limitando la consulta a solo esas dos columnas (`id` y `name`), para no traer datos innecesarios.
+
+**`DATE_FORMAT(date, '%Y-%m')`** — una función de MySQL que reformatea una fecha completa (`2026-09-02`) a solo "año-mes" (`2026-09`), permitiendo agrupar todos los gastos de un mismo mes juntos, sin importar el día exacto en que ocurrieron.
+
+### Rutas nuevas
+
+Añadidas dentro del mismo grupo protegido por `auth:sanctum` en `routes/api.php`:
+
+```php
+use App\Http\Controllers\SummaryController;
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::apiResource('categories', CategoryController::class);
+    Route::apiResource('expenses', ExpenseController::class);
+    Route::get('/summary/by-category', [SummaryController::class, 'byCategory']);
+    Route::get('/summary/by-month', [SummaryController::class, 'byMonth']);
+});
+```
+
+### Un obstáculo al probar: diferencia entre navegar y hacer `fetch`
+
+Al visitar directamente `http://localhost/api/summary/by-category` desde la barra de direcciones del navegador (estando ya logueado en la app), la respuesta fue `{"message": "Unauthenticated."}`, a pesar de que la sesión seguía activa (confirmado visitando `/dashboard`, que sí cargó con normalidad).
+
+**Causa:** una navegación directa por la barra de direcciones no es equivalente, en términos de cómo el navegador construye la petición, a un `fetch()` ejecutado desde dentro de la propia aplicación ya cargada (mismo origen, mismo contexto de ejecución). El middleware `EnsureFrontendRequestsAreStateful` de Sanctum reconoce correctamente las peticiones hechas desde dentro de la SPA, pero no necesariamente una navegación de nivel superior del navegador a esa misma URL.
+
+**Cómo se confirmó la causa real:** en vez de insistir con la barra de direcciones o la consola del navegador (esta última bloqueada además por la protección "self-XSS" de Firefox, que exige escribir `permitir pegar` antes de admitir código pegado), se añadió temporalmente un botón de prueba dentro del propio componente `Expenses.jsx`:
+
+```jsx
+<button
+    onClick={() => {
+        fetch('/api/summary/by-category', {
+            credentials: 'include',
+            headers: { Accept: 'application/json' },
+        })
+            .then((r) => r.json())
+            .then((data) => alert(JSON.stringify(data, null, 2)));
+    }}
+    className="mb-4 rounded bg-blue-600 px-4 py-2 text-white"
+>
+    Probar resumen por categoría
+</button>
+```
+
+Al hacer clic, el `fetch` se ejecutó desde dentro del mismo contexto que usan las demás llamadas de la app (que ya funcionaban correctamente), y esta vez sí devolvió los datos esperados. Esto confirmó que el backend estaba bien configurado, y que el problema anterior era exclusivamente de cómo se estaba probando, no del código. El botón se retiró después de confirmar esto.
+
+### Frontend: instalación de Recharts
+
+```bash
+./vendor/bin/sail npm install recharts --legacy-peer-deps
+```
+
+**Problema encontrado:**
+```
+[plugin:vite:import-analysis] Failed to resolve import "react-is" from "node_modules/.vite/deps/recharts.js"
+```
+
+**Causa:** `react-is` es una dependencia que Recharts necesita internamente, pero no se instaló automáticamente — probablemente porque `--legacy-peer-deps` evita que npm resuelva con estrictez algunas dependencias transitivas (dependencias de las dependencias).
+
+**Solución:**
+```bash
+./vendor/bin/sail npm install react-is --legacy-peer-deps
+```
+Seguido de reiniciar `npm run dev` (`Ctrl+C` y volver a ejecutarlo), para que Vite volviera a analizar las dependencias desde cero.
+
+### Componente de gráficos
+
+Se añadieron dos gráficos usando Recharts, alimentados por los nuevos endpoints:
+
+```jsx
+import {
+    BarChart,
+    Bar,
+    XAxis,
+    YAxis,
+    Tooltip,
+    ResponsiveContainer,
+    LineChart,
+    Line,
+    CartesianGrid,
+} from 'recharts';
+
+// Transformación de los datos que llegan de la API al formato que espera Recharts
+const categoryChartData = summaryByCategory.map((item) => ({
+    name: item.category?.name || 'Sin categoría',
+    total: parseFloat(item.total),
+}));
+
+const monthChartData = summaryByMonth.map((item) => ({
+    month: item.month,
+    total: parseFloat(item.total),
+}));
+```
+
+```jsx
+<ResponsiveContainer width="100%" height={250}>
+    <BarChart data={categoryChartData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="name" />
+        <YAxis />
+        <Tooltip />
+        <Bar dataKey="total" fill="#1f2937" />
+    </BarChart>
+</ResponsiveContainer>
+
+<ResponsiveContainer width="100%" height={250}>
+    <LineChart data={monthChartData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis dataKey="month" />
+        <YAxis />
+        <Tooltip />
+        <Line type="monotone" dataKey="total" stroke="#1f2937" />
+    </LineChart>
+</ResponsiveContainer>
+```
+
+**`parseFloat(item.total)`** — necesario porque la API devuelve el total como una cadena de texto (por ejemplo, `"20.00"`), típico de cómo MySQL/Eloquent representan los valores `DECIMAL` en JSON, y Recharts necesita números reales para dibujar el gráfico correctamente.
+
+**`<ResponsiveContainer>`** — hace que el gráfico ajuste su tamaño automáticamente al espacio disponible de su contenedor, en vez de tener un ancho o alto fijo en píxeles.
+
+**`<BarChart>` / `<LineChart>`** — los dos tipos de gráfico usados: barras para comparar el total entre categorías distintas, línea para ver la evolución del gasto mes a mes.
+
+**`dataKey`** — indica, para cada pieza del gráfico (eje X, eje Y, la barra o la línea), de qué propiedad del objeto de datos debe tomar su valor.
+
+También se cargan estos dos nuevos endpoints (`fetchSummaryByCategory`, `fetchSummaryByMonth`) dentro del mismo `Promise.all([...])` que ya traía categorías y gastos, para que todo se actualice junto cada vez que se crea, edita o elimina un registro.
+
+---
+
+## 20. Subida del proyecto a GitHub
+
+### Preparación: revisión del `.gitignore`
+
+Antes de inicializar el repositorio, se comprobó el `.gitignore` que Laravel genera por defecto:
+
+```bash
+cat .gitignore
+```
+
+Confirmó que excluye correctamente `.env` (credenciales), `/node_modules`, `/vendor`, y archivos de caché/IDE — justo lo que no debe subirse a un repositorio público.
+
+### Inicialización del repositorio
+
+```bash
+git init
+```
+
+Como Git avisó que en el futuro (Git 3.0) el nombre por defecto de la rama principal cambiará, y hoy en día el estándar más extendido (y el que usa GitHub) es `main`, se renombró explícitamente:
+
+```bash
+git branch -m main
+```
+
+### Un problema encontrado antes del primer commit: archivos "basura" de Tinker
+
+Al revisar `git status`, aparecieron varios archivos con nombres extraños en la raíz del proyecto:
+
+```
+category-
+d
+e->category->name
+email
+email-
+er->categories()->create(['name' => 'Comida']);
+er->email$user->email
+name
+```
+
+**Causa:** en algún momento de una sesión anterior, se ejecutaron fragmentos de comandos de Tinker (como `$user->email` o `$user->categories()->create([...])`) directamente en la terminal de bash, en vez de dentro de la consola de Tinker. Bash interpretó caracteres como `>` (que en Tinker es parte de la sintaxis de acceso a propiedades/métodos, `->`) como un operador de **redirección de salida**, creando archivos literales con esos fragmentos como nombre.
+
+**Solución:** se borraron manualmente con `rm`, usando comillas para poder pasar nombres de archivo con caracteres especiales:
+
+```bash
+rm "category-" "d" "e->category->name" "email" "email-" "er->categories()->create(['name' => 'Comida']);" "er->email\$user->email" "name"
+```
+
+Tras confirmar (con `ls` y comprobando que la app seguía funcionando con normalidad) que la limpieza no había afectado a nada del proyecto real, se continuó.
+
+### Configuración de la identidad de Git
+
+Al ser la primera vez que se usaba Git en esta máquina, se configuró globalmente (aplica a todos los repositorios futuros en este sistema, no solo a este proyecto):
+
+```bash
+git config --global user.name "Aisak"
+git config --global user.email "corderogarcia4496@gmail.com"
+```
+
+### Autenticación con GitHub por SSH
+
+En vez de usar usuario/contraseña (método que GitHub ya no acepta directamente para operaciones de Git desde hace tiempo), se configuró autenticación por clave SSH.
+
+**Generación de la clave:**
+```bash
+ssh-keygen -t ed25519 -C "corderogarcia4496@gmail.com"
+```
+- `-t ed25519` — tipo de clave moderno y recomendado actualmente (más seguro y rápido que el antiguo RSA).
+- `-C "..."` — un comentario asociado a la clave, normalmente el email, útil para identificarla si en el futuro se tienen varias.
+
+Se aceptó la ubicación por defecto (`~/.ssh/id_ed25519`) y se dejó sin passphrase adicional (aceptable para un entorno de desarrollo personal).
+
+Esto genera dos archivos:
+- `~/.ssh/id_ed25519` — la clave **privada**. Nunca se comparte ni se sube a ningún sitio.
+- `~/.ssh/id_ed25519.pub` — la clave **pública**. Esta sí se sube a GitHub; es segura de compartir por diseño.
+
+**Registro en GitHub:**
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+Se copió el contenido completo (empieza por `ssh-ed25519 AAAA...` y termina con el email), y se añadió en GitHub desde: perfil → **Settings** → **SSH and GPG keys** → **New SSH key**.
+
+**Verificación de la conexión:**
+```bash
+ssh -T git@github.com
+```
+Tras aceptar la huella del servidor la primera vez (`yes`), el mensaje `Hi <usuario>! You've successfully authenticated, but GitHub does not provide shell access.` confirmó que la autenticación quedó correctamente establecida (ese mensaje es el esperado y normal; no indica ningún problema).
+
+### Primer commit y creación del repositorio remoto
+
+```bash
+git add .
+git status   # confirmación visual de qué se va a subir
+git commit -m "Proyecto inicial: gestor de gastos con Laravel, React, API REST y gráficos"
+```
+
+El repositorio remoto se creó manualmente desde la web de GitHub (`github.com/new`), como público, **sin** marcar las opciones de generar README, `.gitignore` o licencia automáticamente (para evitar un conflicto innecesario con los archivos que ya existían localmente).
+
+### Conexión y subida
+
+```bash
+git remote add origin git@github.com:isaaccg96/gestor-gastos.git
+git remote -v   # confirmación de que la URL remota quedó bien configurada
+git push -u origin main
+```
+
+`-u origin main` vincula la rama local `main` con la rama `main` del repositorio remoto llamado `origin`, de forma que, a partir de este primer push, sea suficiente con `git push` a secas para subir cambios futuros.
+
+Resultado: subida exitosa, repositorio visible públicamente en `https://github.com/isaaccg96/gestor-gastos`.
+
+### Reemplazo del README genérico
+
+El `README.md` que Laravel genera por defecto (centrado en explicar el framework en general) se sustituyó por uno específico del proyecto, con: descripción, stack tecnológico, lista de funcionalidades, explicación de la arquitectura híbrida Inertia/API REST, instrucciones de instalación con Sail, y estructura de carpetas.
+
+```bash
+git add README.md
+git commit -m "Actualiza README con documentación del proyecto"
+git push
+```
+
+Este segundo `push` ya no necesitó el flag `-u origin main`, al haber quedado establecida esa relación desde el primer push.
+
+GitHub renderiza automáticamente el contenido de `README.md` en la página principal del repositorio, por lo que la verificación final se hizo simplemente visitando `https://github.com/isaaccg96/gestor-gastos` en el navegador.
+
+---
+
+## 21. Policies: seguridad entre usuarios
+
+### El problema que resuelven
+
+Hasta este punto, los controladores de `Category` y `Expense` usaban **Route Model Binding** (`Category $category` en los parámetros) para localizar automáticamente el registro correspondiente al ID recibido en la URL, pero **no comprobaban que ese registro perteneciera al usuario autenticado**. En teoría, un usuario autenticado podía intentar ver, editar o borrar un registro de otro usuario simplemente adivinando o probando su ID numérico.
+
+Las **Policies** de Laravel centralizan la lógica de autorización ("¿puede este usuario realizar esta acción sobre este registro concreto?") en una clase dedicada por modelo, en vez de repetir esa comprobación a mano dentro de cada método de cada controlador.
+
+### Creación de las policies
+
+```bash
+./vendor/bin/sail artisan make:policy CategoryPolicy --model=Category
+./vendor/bin/sail artisan make:policy ExpensePolicy --model=Expense
+```
+
+Esto genera, en `app/Policies/`, una clase por modelo con varios métodos ya esbozados (`viewAny`, `view`, `create`, `update`, `delete`, `restore`, `forceDelete`), todos devolviendo `false` por defecto — una postura segura de partida, ya que cualquier método no implementado explícitamente deniega el acceso en vez de concederlo por accidente.
+
+### Contenido final de `app/Policies/CategoryPolicy.php`
+
+Se modificaron únicamente los métodos `view`, `update` y `delete`, dejando el resto (`viewAny`, `create`, `restore`, `forceDelete`) devolviendo `false`, sin usar:
+
+```php
+<?php
+
+namespace App\Policies;
+
+use App\Models\Category;
+use App\Models\User;
+use Illuminate\Auth\Access\Response;
+
+class CategoryPolicy
+{
+    public function viewAny(User $user): bool
+    {
+        return false;
+    }
+
+    public function view(User $user, Category $category): bool
+    {
+        return $user->id === $category->user_id;
+    }
+
+    public function create(User $user): bool
+    {
+        return false;
+    }
+
+    public function update(User $user, Category $category): bool
+    {
+        return $user->id === $category->user_id;
+    }
+
+    public function delete(User $user, Category $category): bool
+    {
+        return $user->id === $category->user_id;
+    }
+
+    public function restore(User $user, Category $category): bool
+    {
+        return false;
+    }
+
+    public function forceDelete(User $user, Category $category): bool
+    {
+        return false;
+    }
+}
+```
+
+### Contenido final de `app/Policies/ExpensePolicy.php`
+
+Mismo patrón, aplicado a `Expense`:
+
+```php
+<?php
+
+namespace App\Policies;
+
+use App\Models\Expense;
+use App\Models\User;
+use Illuminate\Auth\Access\Response;
+
+class ExpensePolicy
+{
+    public function viewAny(User $user): bool
+    {
+        return false;
+    }
+
+    public function view(User $user, Expense $expense): bool
+    {
+        return $user->id === $expense->user_id;
+    }
+
+    public function create(User $user): bool
+    {
+        return false;
+    }
+
+    public function update(User $user, Expense $expense): bool
+    {
+        return $user->id === $expense->user_id;
+    }
+
+    public function delete(User $user, Expense $expense): bool
+    {
+        return $user->id === $expense->user_id;
+    }
+
+    public function restore(User $user, Expense $expense): bool
+    {
+        return false;
+    }
+
+    public function forceDelete(User $user, Expense $expense): bool
+    {
+        return false;
+    }
+}
+```
+
+La lógica central de ambas es idéntica: comparar el `id` del usuario autenticado con el campo `user_id` del registro. Si coinciden, el usuario es el dueño y la acción se permite; si no, se deniega.
+
+### Verificación manual desde Tinker (antes de tocar los controladores)
+
+Se comprobó primero que Laravel reconocía las policies automáticamente (en versiones recientes, se detectan por convención de nombres, `Category` → `CategoryPolicy`, sin necesitar un registro manual), usando el método `can()` disponible en cualquier modelo `User`:
+
+```php
+$user = App\Models\User::first();
+$category = App\Models\Category::first();
+$user->can('view', $category);   // true — el usuario es el dueño
+```
+
+Para probar el caso negativo (la parte que realmente importa verificar), se creó un segundo usuario de prueba:
+
+```php
+$otroUsuario = App\Models\User::create([
+    'name' => 'Usuario Dos',
+    'email' => 'usuario2@test.com',
+    'password' => bcrypt('password123'),
+    'email_verified_at' => now(),
+]);
+
+$otroUsuario->can('view', $category);   // false — no es el dueño
+```
+
+Ambos resultados fueron los esperados, confirmando que las policies, en sí mismas, funcionaban correctamente antes incluso de conectarlas a las rutas HTTP reales.
+
+### Un obstáculo: `Undefined method 'authorize'`
+
+Al intentar usar `$this->authorize(...)` dentro de los controladores (el método que aplica una policy automáticamente y devuelve un error 403 si no se cumple), apareció un aviso del analizador de código de VS Code (Intelephense): `Undefined method 'authorize'`.
+
+**Diagnóstico:** se revisó el contenido de la clase base de la que heredan todos los controladores:
+```bash
+cat app/Http/Controllers/Controller.php
+```
+Reveló que, en esta versión del proyecto, la clase venía completamente vacía:
+```php
+abstract class Controller
+{
+    //
+}
+```
+
+**Causa real (no solo una advertencia del editor):** el método `authorize()` no pertenece directamente a la clase `Controller`; lo aporta un trait de Laravel llamado `AuthorizesRequests`, que normalmente ya viene incluido en el `Controller` base de un proyecto recién creado, pero que en este caso no estaba presente. Por tanto, el aviso de Intelephense era correcto: el método efectivamente no existía todavía.
+
+**Solución** — añadir el trait a la clase base:
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+
+abstract class Controller
+{
+    use AuthorizesRequests;
+}
+```
+
+Al añadir el trait aquí (en la clase de la que heredan tanto `CategoryController` como `ExpenseController`), el método `authorize()` quedó disponible automáticamente en ambos, sin tener que repetir el `use` en cada controlador individual.
+
+### Conexión de las policies a los controladores
+
+Se añadió `$this->authorize(...)` al principio de los métodos `show`, `update` y `destroy` de ambos controladores (no hizo falta en `index`, que ya filtraba por `$request->user()->...`, ni en `store`, que siempre crea un registro nuevo para el propio usuario autenticado).
+
+**`app/Http/Controllers/CategoryController.php`** (métodos modificados):
+```php
+public function show(Category $category)
+{
+    $this->authorize('view', $category);
+
+    return $category;
+}
+
+public function update(Request $request, Category $category)
+{
+    $this->authorize('update', $category);
+
+    $validated = $request->validate([
+        'name' => 'required|string|max:255',
+    ]);
+
+    $category->update($validated);
+
+    return $category;
+}
+
+public function destroy(Category $category)
+{
+    $this->authorize('delete', $category);
+
+    $category->delete();
+
+    return response()->noContent();
+}
+```
+
+**`app/Http/Controllers/ExpenseController.php`** (métodos modificados):
+```php
+public function show(Expense $expense)
+{
+    $this->authorize('view', $expense);
+
+    return $expense->load('category');
+}
+
+public function update(Request $request, Expense $expense)
+{
+    $this->authorize('update', $expense);
+
+    $validated = $request->validate([
+        'amount' => 'required|numeric|min:0',
+        'description' => 'nullable|string|max:255',
+        'date' => 'required|date',
+        'category_id' => 'required|exists:categories,id',
+    ]);
+
+    $expense->update($validated);
+
+    return $expense->load('category');
+}
+
+public function destroy(Expense $expense)
+{
+    $this->authorize('delete', $expense);
+
+    $expense->delete();
+
+    return response()->noContent();
+}
+```
+
+**Qué hace `$this->authorize('view', $category)` en tiempo de ejecución:** localiza automáticamente la Policy correspondiente al tipo de modelo recibido (`Category` → `CategoryPolicy`), invoca el método indicado (`view`, `update` o `delete`) pasándole el usuario autenticado de la petición actual y el registro concreto, y si ese método devuelve `false`, lanza automáticamente una excepción que Laravel convierte en una respuesta HTTP **403 Forbidden** — sin necesidad de escribir ese manejo de errores a mano en cada sitio.
+
+### Verificación final
+
+Se probó primero el caso positivo desde el navegador (editar/eliminar una categoría o gasto propio), confirmando que seguía funcionando con normalidad — las policies no rompieron ningún flujo existente para el dueño legítimo de los datos.
+
+Después, se repitió la verificación con `can()` desde Tinker, comparando explícitamente ambos usuarios sobre el mismo registro:
+
+```php
+$otroUsuario = App\Models\User::where('email', 'usuario2@test.com')->first();
+$categoria = App\Models\Category::first();
+
+$otroUsuario->can('view', $categoria);    // false
+$otroUsuario->can('update', $categoria);  // false
+$otroUsuario->can('delete', $categoria);  // false
+
+$tuUsuario = App\Models\User::where('email', 'isaacdesarrollo44@gmail.com')->first();
+
+$tuUsuario->can('view', $categoria);    // true
+$tuUsuario->can('update', $categoria);  // true
+$tuUsuario->can('delete', $categoria);  // true
+```
+
+Los seis resultados salieron como se esperaba, confirmando que la protección funciona correctamente en ambos sentidos: el dueño conserva pleno acceso, y cualquier otro usuario queda bloqueado.
+
+### Subida a Git
+
+```bash
+git add .
+git status   # confirmación de qué archivos se incluyen (controladores, Controller.php, las dos policies)
+git commit -m "Añade Policies para restringir acceso a datos de otros usuarios"
+git push
+```
+
+---
+
+## 22. Glosario ampliado (segunda sesión)
+
+**Agregación SQL (`SUM`, `GROUP BY`)** — operaciones que calculan un valor resumido (como una suma total) a partir de varias filas agrupadas por un criterio común (por ejemplo, sumar los montos de todos los gastos, agrupados por categoría o por mes).
+
+**`selectRaw()`** — método de Eloquent que permite incluir una porción de SQL escrita directamente ("en crudo") dentro de una consulta, útil para funciones de agregación o de fecha que no tienen un atajo dedicado en la sintaxis normal del ORM.
+
+**Recharts** — librería de gráficos para React, basada en componentes declarativos (`<BarChart>`, `<LineChart>`, etc.) en vez de dibujar directamente sobre un `<canvas>`.
+
+**`ResponsiveContainer`** — componente de Recharts que ajusta el tamaño del gráfico automáticamente al espacio disponible de su contenedor padre.
+
+**Policy** — una clase de Laravel dedicada a centralizar la lógica de autorización ("¿puede este usuario hacer esta acción sobre este registro?") para un modelo concreto, en vez de repetir esa comprobación dentro de cada controlador.
+
+**`$this->authorize(...)`** — método (aportado por el trait `AuthorizesRequests`) que aplica automáticamente la Policy correspondiente a un modelo, devolviendo una respuesta 403 si el resultado es negativo.
+
+**`AuthorizesRequests`** — trait de Laravel que añade el método `authorize()` a cualquier clase donde se use; normalmente se incluye en la clase base `Controller` para que esté disponible en todos los controladores del proyecto sin repetirlo.
+
+**`$user->can('accion', $modelo)`** — forma de comprobar manualmente (por ejemplo, desde Tinker o dentro de una vista) si un usuario concreto tiene permiso para realizar una acción sobre un registro concreto, según lo que determine su Policy correspondiente.
+
+**Clave SSH (pública/privada)** — un par de claves criptográficas usadas para autenticarse ante un servicio (como GitHub) sin necesidad de escribir usuario y contraseña en cada operación. La clave privada nunca se comparte; la clave pública sí, y es la que se registra en el servicio remoto.
+
+**`git remote`** — la referencia a la ubicación de un repositorio en un servidor externo (como GitHub); `origin` es el nombre convencional que se le da al remoto principal de un proyecto.
+
+**`git push -u origin main`** — sube los commits locales al repositorio remoto, y además establece una relación de seguimiento entre la rama local `main` y la rama remota `main`, de forma que los siguientes `push` no necesiten repetir esos parámetros.
+
+---
+
+## 23. Qué queda pendiente
+
+Actualizado tras la segunda sesión de trabajo:
+
+1. **Validación visual de errores** — mostrar en la interfaz los mensajes de error específicos que devuelve el backend cuando falla una validación (por ejemplo, si el monto queda vacío), en vez de solo un mensaje genérico.
+2. **Tests automatizados con Pest** — el proyecto quedó configurado con Pest durante la instalación de Breeze, pero todavía no se ha escrito ningún test específico para los modelos, controladores o policies construidos.
+3. **Filtros en la interfaz** — por ejemplo, ver los gastos de un mes concreto o de una categoría concreta, aprovechando que el backend ya soporta ese tipo de consultas.
+4. Revisar si conviene aplicar las Policies también a nivel de **Form Requests** dedicados (clases de validación separadas de los controladores), como siguiente paso de organización del código a medida que el proyecto crezca.
+
+### Completado hasta ahora (para referencia rápida)
+
+- ✅ Entorno de desarrollo completo (Docker, Sail, Laravel, MySQL, React + Inertia)
+- ✅ Modelos y relaciones (User → Categories → Expenses)
+- ✅ API REST completa, protegida con Sanctum
+- ✅ Auth híbrida: Inertia para login/registro, cookie-based Sanctum para la API
+- ✅ CRUD completo en React puro (crear, leer, editar, eliminar)
+- ✅ Resumen agregado (por categoría y por mes) con gráficos en Recharts
+- ✅ Proyecto subido a GitHub, con README específico del proyecto
+- ✅ Policies de autorización, verificadas en ambos sentidos (dueño / no dueño)
