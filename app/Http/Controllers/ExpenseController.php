@@ -26,11 +26,15 @@ class ExpenseController extends Controller
 
     public function show(Expense $expense)
     {
+        $this->authorize('view', $expense);
+
         return $expense->load('category');
     }
 
     public function update(Request $request, Expense $expense)
     {
+        $this->authorize('update', $expense);
+
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0',
             'description' => 'nullable|string|max:255',
@@ -45,6 +49,8 @@ class ExpenseController extends Controller
 
     public function destroy(Expense $expense)
     {
+        $this->authorize('delete', $expense);
+
         $expense->delete();
 
         return response()->noContent();

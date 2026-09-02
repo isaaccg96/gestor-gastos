@@ -23,11 +23,15 @@ class CategoryController extends Controller
 
     public function show(Category $category)
     {
+        $this->authorize('view', $category);
+
         return $category;
     }
 
     public function update(Request $request, Category $category)
     {
+        $this->authorize('update', $category);
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
         ]);
@@ -39,6 +43,8 @@ class CategoryController extends Controller
 
     public function destroy(Category $category)
     {
+        $this->authorize('delete', $category);
+
         $category->delete();
 
         return response()->noContent();
