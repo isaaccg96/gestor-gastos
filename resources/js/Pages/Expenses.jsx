@@ -22,6 +22,7 @@ export default function Expenses() {
     const [error, setError] = useState(null);
 
     const [newCategoryName, setNewCategoryName] = useState('');
+    const [newCategoryBudget, setNewCategoryBudget] = useState('');
     const [submittingCategory, setSubmittingCategory] = useState(false);
 
     const [newExpense, setNewExpense] = useState({
@@ -120,7 +121,10 @@ export default function Expenses() {
                 Accept: 'application/json',
                 'X-XSRF-TOKEN': getCsrfToken(),
             },
-            body: JSON.stringify({ name: newCategoryName }),
+            body: JSON.stringify({
+                name: newCategoryName,
+                budget_limit: newCategoryBudget || null,
+            }),
         })
             .then((res) => {
                 if (!res.ok) throw new Error('Error al crear la categoría');
@@ -128,6 +132,7 @@ export default function Expenses() {
             })
             .then(() => {
                 setNewCategoryName('');
+                setNewCategoryBudget('');
                 setSubmittingCategory(false);
                 loadAll();
             })
@@ -285,6 +290,26 @@ export default function Expenses() {
         total: parseFloat(item.total),
     }));
 
+    const getBudgetProgress = (category) => {
+        const spent = parseFloat(category.expenses_sum_amount) || 0;
+        const limit = parseFloat(category.budget_limit);
+
+        if (!limit || limit <= 0) {
+            return null;
+        }
+
+        const percentage = Math.min((spent / limit) * 100, 100);
+
+        let color = 'bg-green-500';
+        if (percentage >= 100) {
+            color = 'bg-red-500';
+        } else if (percentage >= 80) {
+            color = 'bg-yellow-500';
+        }
+
+        return { spent, limit, percentage, color };
+    };
+
     return (
         <AuthenticatedLayout
             header={
@@ -365,6 +390,17 @@ export default function Expenses() {
                                     className="flex-1 rounded border-gray-300 shadow-sm"
                                     required
                                 />
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={newCategoryBudget}
+                                    onChange={(e) =>
+                                        setNewCategoryBudget(e.target.value)
+                                    }
+                                    placeholder="Límite (opcional)"
+                                    className="w-40 rounded border-gray-300 shadow-sm"
+                                />
                                 <button
                                     type="submit"
                                     disabled={submittingCategory}
@@ -424,26 +460,36 @@ export default function Expenses() {
                                                 </form>
                                             ) : (
                                                 <>
-                                                    <span>
-                                                        {category.name}
-                                                    </span>
+                                                    <div className="flex-1 pr-4">
+                                                        <div className="flex items-center justify-between">
+                                                            <span>{category.name}</span>
+                                                        </div>
+                                                        {getBudgetProgress(category) && (
+                                                            <div className="mt-2">
+                                                                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+                                                                    <div
+                                                                        className={`h-full ${getBudgetProgress(category).color} transition-all`}
+                                                                        style={{
+                                                                            width: `${getBudgetProgress(category).percentage}%`,
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                                <p className="mt-1 text-xs text-gray-500">
+                                                                    {getBudgetProgress(category).spent.toFixed(2)}€ de{' '}
+                                                                    {getBudgetProgress(category).limit.toFixed(2)}€
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                     <div className="flex gap-3">
                                                         <button
-                                                            onClick={() =>
-                                                                startEditingCategory(
-                                                                    category,
-                                                                )
-                                                            }
+                                                            onClick={() => startEditingCategory(category)}
                                                             className="text-sm text-blue-600 hover:underline"
                                                         >
                                                             Editar
                                                         </button>
                                                         <button
-                                                            onClick={() =>
-                                                                handleDeleteCategory(
-                                                                    category.id,
-                                                                )
-                                                            }
+                                                            onClick={() => handleDeleteCategory(category.id)}
                                                             className="text-sm text-red-600 hover:underline"
                                                         >
                                                             Eliminar
