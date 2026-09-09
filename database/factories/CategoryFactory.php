@@ -1,0 +1,21 @@
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Category;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/**
+ * @extends Factory<Category>
+ */
+class CategoryFactory extends Factory
+{
+    public function definition(): array
+    {
+        return [
+            'name' => $this->faker->word(),
+            'user_id' => \App\Models\User::factory(),
+            'budget_limit' => $this->faker->randomFloat(2, 50, 500),
+        ];
+    }
+}
