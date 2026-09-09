@@ -28,7 +28,11 @@ Esta guía documenta, paso a paso y en orden real, todo lo que se hizo para mont
 20. [Subida del proyecto a GitHub](#20-subida-del-proyecto-a-github)
 21. [Policies: seguridad entre usuarios](#21-policies-seguridad-entre-usuarios)
 22. [Glosario ampliado (segunda sesión)](#22-glosario-ampliado-segunda-sesión)
-23. [Qué queda pendiente](#23-qué-queda-pendiente)
+23. [Límite de presupuesto por categoría y barra de progreso](#23-límite-de-presupuesto-por-categoría-y-barra-de-progreso)
+24. [Enlace de navegación a Gastos](#24-enlace-de-navegación-a-gastos)
+25. [Suite de tests automatizados con Pest](#25-suite-de-tests-automatizados-con-pest)
+26. [Glosario ampliado (tercera sesión)](#26-glosario-ampliado-tercera-sesión)
+27. [Qué queda pendiente](#27-qué-queda-pendiente)
 
 ---
 
@@ -1685,14 +1689,444 @@ git push
 
 ---
 
-## 23. Qué queda pendiente
+## 23. Límite de presupuesto por categoría y barra de progreso
 
-Actualizado tras la segunda sesión de trabajo:
+En una tercera sesión de trabajo se añadió la posibilidad de asignar un límite de gasto opcional a cada categoría, junto con una barra de progreso visual que muestra cuánto se ha gastado respecto a ese límite.
 
-1. **Validación visual de errores** — mostrar en la interfaz los mensajes de error específicos que devuelve el backend cuando falla una validación (por ejemplo, si el monto queda vacío), en vez de solo un mensaje genérico.
-2. **Tests automatizados con Pest** — el proyecto quedó configurado con Pest durante la instalación de Breeze, pero todavía no se ha escrito ningún test específico para los modelos, controladores o policies construidos.
-3. **Filtros en la interfaz** — por ejemplo, ver los gastos de un mes concreto o de una categoría concreta, aprovechando que el backend ya soporta ese tipo de consultas.
-4. Revisar si conviene aplicar las Policies también a nivel de **Form Requests** dedicados (clases de validación separadas de los controladores), como siguiente paso de organización del código a medida que el proyecto crezca.
+### Backend: nueva columna en `categories`
+
+Como la migración original de `categories` ya se había aplicado, se creó una migración **nueva** que añade una columna a la tabla existente, en vez de modificar la migración original (una migración ya aplicada no debe editarse retroactivamente):
+
+```bash
+./vendor/bin/sail artisan make:migration add_budget_limit_to_categories_table --table=categories
+```
+
+Contenido de la migración:
+
+```php
+public function up(): void
+{
+    Schema::table('categories', function (Blueprint $table) {
+        $table->decimal('budget_limit', 10, 2)->nullable()->after('name');
+    });
+}
+
+public function down(): void
+{
+    Schema::table('categories', function (Blueprint $table) {
+        $table->dropColumn('budget_limit');
+    });
+}
+```
+
+**`Schema::table(...)`** — a diferencia de `Schema::create(...)` (usado para tablas nuevas), este método se usa para **modificar** una tabla ya existente.
+
+**`->nullable()`** — el límite es opcional; una categoría sin límite definido simplemente no mostrará la barra de progreso en el frontend.
+
+**`->after('name')`** — puramente cosmético, ubica la columna nueva justo después de `name` al inspeccionar la tabla.
+
+**`down()`** — define cómo deshacer esta migración concreta (elimina la columna), independientemente de las demás migraciones del proyecto.
+
+Se aplicó con:
+```bash
+./vendor/bin/sail artisan migrate
+```
+
+### Backend: modelo y controlador
+
+En `app/Models/Category.php`, se añadió el nuevo campo a la asignación masiva:
+```php
+protected $fillable = ['name', 'user_id', 'budget_limit'];
+```
+
+En `app/Http/Controllers/CategoryController.php`, se añadió la validación del nuevo campo en `store` y `update`:
+```php
+$validated = $request->validate([
+    'name' => 'required|string|max:255',
+    'budget_limit' => 'nullable|numeric|min:0',
+]);
+```
+
+Y el método `index()` se modificó para incluir, junto a cada categoría, el total ya gastado en ella:
+
+```php
+public function index(Request $request)
+{
+    return $request->user()
+        ->categories()
+        ->withSum('expenses', 'amount')
+        ->latest()
+        ->get();
+}
+```
+
+**`withSum('expenses', 'amount')`** — un atajo de Eloquent que calcula, para cada categoría del listado, la suma de la columna `amount` de todos sus gastos relacionados (usando la relación `expenses()` ya definida en el modelo), añadiendo el resultado como un atributo nuevo llamado `expenses_sum_amount` en cada categoría devuelta. Cumple, en un solo paso eficiente, un propósito similar al `selectRaw`/`groupBy` usado en `SummaryController`, pero aplicado directamente sobre el propio listado de categorías en vez de sobre un endpoint aparte.
+
+### Frontend: formulario con el nuevo campo
+
+Se añadió un input numérico opcional en el formulario de creación de categorías, junto con el estado correspondiente:
+
+```jsx
+const [newCategoryBudget, setNewCategoryBudget] = useState('');
+```
+
+```jsx
+<input
+    type="number"
+    step="0.01"
+    min="0"
+    value={newCategoryBudget}
+    onChange={(e) => setNewCategoryBudget(e.target.value)}
+    placeholder="Límite (opcional)"
+    className="w-40 rounded border-gray-300 shadow-sm"
+/>
+```
+
+Y el envío del formulario se actualizó para incluir el campo:
+
+```jsx
+body: JSON.stringify({
+    name: newCategoryName,
+    budget_limit: newCategoryBudget || null,
+}),
+```
+
+**`newCategoryBudget || null`** — si el campo se deja vacío, su valor en React es una cadena vacía (`""`), que en JavaScript se evalúa como "falsy". El operador `||` hace que, en ese caso, se envíe `null` en su lugar, que es el valor que el backend espera para "sin límite" (recordando que el campo es `nullable`).
+
+### Frontend: cálculo y visualización de la barra de progreso
+
+Se añadió una función auxiliar para calcular el porcentaje gastado y el color correspondiente:
+
+```jsx
+const getBudgetProgress = (category) => {
+    const spent = parseFloat(category.expenses_sum_amount) || 0;
+    const limit = parseFloat(category.budget_limit);
+
+    if (!limit || limit <= 0) {
+        return null;
+    }
+
+    const percentage = Math.min((spent / limit) * 100, 100);
+
+    let color = 'bg-green-500';
+    if (percentage >= 100) {
+        color = 'bg-red-500';
+    } else if (percentage >= 80) {
+        color = 'bg-yellow-500';
+    }
+
+    return { spent, limit, percentage, color };
+};
+```
+
+**`parseFloat(category.expenses_sum_amount) || 0`** — el total gastado llega como cadena de texto desde la API; si una categoría no tiene ningún gasto todavía, ese campo puede venir como `null`, y `parseFloat(null)` da `NaN`. El `|| 0` cubre ese caso, tratándolo como "0 gastado".
+
+**`if (!limit || limit <= 0) return null`** — si la categoría no tiene límite definido (o el valor no tiene sentido, como 0 o negativo), la función no calcula nada; el componente usa este `null` para decidir que no debe mostrarse ninguna barra para esa categoría.
+
+**`Math.min((spent / limit) * 100, 100)`** — calcula el porcentaje gastado respecto al límite, pero topándolo en 100 para que la barra visual nunca se salga de su contenedor, aunque el gasto real haya superado el límite (el dato exacto de cuánto se gastó se sigue mostrando aparte, sin ese tope).
+
+**Los umbrales de color** — verde por defecto, amarillo a partir del 80% del límite, rojo al llegar o superar el 100%. Son valores de diseño elegidos para este proyecto, ajustables cambiando esos dos números.
+
+En la lista de categorías, se añadió la barra dentro de cada elemento:
+
+```jsx
+{getBudgetProgress(category) && (
+    <div className="mt-2">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+            <div
+                className={`h-full ${getBudgetProgress(category).color} transition-all`}
+                style={{
+                    width: `${getBudgetProgress(category).percentage}%`,
+                }}
+            />
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+            {getBudgetProgress(category).spent.toFixed(2)}€ de{' '}
+            {getBudgetProgress(category).limit.toFixed(2)}€
+        </p>
+    </div>
+)}
+```
+
+**Renderizado condicional (`{condicion && (...)}`)** — si `getBudgetProgress` devuelve `null` (categoría sin límite), no se dibuja nada de esta sección; solo aparece la barra cuando hay un valor real que mostrar.
+
+**`style={{ width: ... }}`** — el ancho de la barra interior se calcula dinámicamente como un porcentaje concreto, algo que no puede expresarse con una clase predefinida de Tailwind (no existe, por ejemplo, una clase `w-73%`), así que aquí se usa el atributo `style` directo de React en vez de una clase de utilidad.
+
+**`.toFixed(2)`** — formatea los números con exactamente dos decimales, para que se vean como cantidades de dinero (`45.00€`, no `45€` ni `45.5€`).
+
+### Un ajuste de layout necesario
+
+Al añadir la barra dentro del bloque del nombre de la categoría, ese bloque creció en altura, y los botones de "Editar"/"Eliminar" (alineados verticalmente al centro del elemento de la lista) quedaron visualmente pegados a la barra. La solución elegida fue mantener la alineación centrada del `<li>` tal como estaba, y en su lugar añadir un pequeño espacio de separación horizontal al contenedor del nombre y la barra:
+
+```jsx
+<div className="flex-1 pr-4">
+```
+
+El `pr-4` (padding-right) crea un margen entre ese bloque y la zona de los botones, sin necesitar cambiar la alineación vertical general del elemento.
+
+---
+
+## 24. Enlace de navegación a Gastos
+
+Para no depender de escribir la URL `/expenses` manualmente cada vez, se añadió un enlace en el menú de navegación superior del layout compartido por todas las páginas autenticadas (`resources/js/Layouts/AuthenticatedLayout.jsx`), junto al enlace ya existente de "Dashboard".
+
+**En el menú de escritorio:**
+```jsx
+<NavLink
+    href={route('expenses')}
+    active={route().current('expenses')}
+>
+    Gastos
+</NavLink>
+```
+
+**En el menú móvil (desplegable):**
+```jsx
+<ResponsiveNavLink
+    href={route('expenses')}
+    active={route().current('expenses')}
+>
+    Gastos
+</ResponsiveNavLink>
+```
+
+**`route('expenses')`** — genera la URL correspondiente a la ruta con nombre `expenses`, definida previamente en `routes/web.php` (`Route::get('/expenses', ...)->name('expenses')`). Esta función la proporciona **Ziggy**, una librería que Breeze instala por defecto para poder referenciar rutas de Laravel por su nombre desde JavaScript, en vez de escribir URLs a mano — si la URL cambiara en el backend en el futuro, el enlace se actualizaría solo, sin tocar el frontend.
+
+**`active={route().current('expenses')}`** — resalta visualmente el enlace (con los estilos que ya trae `NavLink`/`ResponsiveNavLink` de Breeze) cuando el usuario se encuentra actualmente en esa página.
+
+---
+
+## 25. Suite de tests automatizados con Pest
+
+Tras completar las funcionalidades anteriores, se dedicó una sesión a escribir tests automatizados, cubriendo las partes más críticas del proyecto: autorización (Policies), validación de datos, y corrección de los cálculos de resumen.
+
+### Preparación: configuración de la base de datos de pruebas
+
+Se revisó primero la configuración existente en `tests/Pest.php`:
+
+```php
+pest()->extend(TestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Feature');
+```
+
+**`RefreshDatabase`** — un trait de Laravel que hace que cada test se ejecute sobre una base de datos limpia, restablecida automáticamente. Esto garantiza que los tests no toquen ni ensucien los datos reales de desarrollo (usuarios, categorías y gastos creados manualmente durante las sesiones anteriores).
+
+Se comprobó que `phpunit.xml` definía `DB_DATABASE=testing`, pero sin especificar `DB_CONNECTION`, lo que hacía que los tests intentaran usar el motor MySQL configurado en `.env`, apuntando a una base de datos llamada `testing` que no existía dentro del contenedor de MySQL de Sail.
+
+**Solución elegida — usar SQLite en memoria para los tests**, en vez de crear una base de datos MySQL adicional. Es el enfoque más común en proyectos Laravel para testing, por ser considerablemente más rápido (no hay conexión de red al contenedor de base de datos; todo ocurre en memoria RAM durante la ejecución) y no depender de infraestructura adicional.
+
+Primero se comprobó que las extensiones necesarias estuvieran disponibles dentro del contenedor:
+```bash
+./vendor/bin/sail php -m | grep -i sqlite
+```
+Confirmó la presencia de `pdo_sqlite` y `sqlite3`.
+
+Se editó `phpunit.xml`, sustituyendo la línea de `DB_DATABASE` existente por dos líneas nuevas:
+
+```xml
+<env name="DB_CONNECTION" value="sqlite"/>
+<env name="DB_DATABASE" value=":memory:"/>
+```
+
+**`DB_CONNECTION=sqlite`** — indica a Laravel que, durante la ejecución de tests, use el driver de SQLite en vez de MySQL.
+
+**`DB_DATABASE=:memory:`** — un valor especial reconocido por SQLite que significa "no uses un archivo en disco; crea la base de datos completamente en memoria RAM". Se genera vacía al iniciar cada ejecución de tests (aplicando todas las migraciones sobre ella) y desaparece al terminar, sin dejar ningún rastro persistente.
+
+**Nota sobre edición de archivos:** un primer intento de editar `phpunit.xml` manualmente en VS Code no se guardó correctamente (el archivo seguía mostrando el valor antiguo al revisarlo por terminal). Se resolvió aplicando el cambio directamente desde la terminal con `sed`:
+```bash
+sed -i 's/<env name="DB_DATABASE" value="testing"\/>/<env name="DB_CONNECTION" value="sqlite"\/>\n        <env name="DB_DATABASE" value=":memory:"\/>/' phpunit.xml
+```
+
+Se verificó el funcionamiento corriendo primero los tests ya existentes (generados por Breeze):
+```bash
+./vendor/bin/sail artisan test
+```
+Resultado: 25 tests pasando en menos de 2 segundos, confirmando que la infraestructura de testing (SQLite en memoria + `RefreshDatabase` + migraciones) quedó correctamente configurada antes de escribir ningún test propio.
+
+### Un requisito previo: `HasFactory` en los modelos
+
+Al intentar usar `Category::factory()` en un test, apareció el error:
+```
+BadMethodCallException: Call to undefined method App\Models\Category::factory()
+```
+
+**Causa:** a diferencia del modelo `User` (que Laravel genera ya con el trait `HasFactory` incluido por defecto), los modelos `Category` y `Expense`, creados con `artisan make:model`, no incluyeron ese trait automáticamente. Sin él, Eloquent no sabe relacionar el modelo con su clase de factory correspondiente, aunque el archivo de la factory exista.
+
+**Solución** — se añadió el trait a ambos modelos:
+
+```php
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+class Category extends Model
+{
+    use HasFactory;
+    // ...
+}
+```
+
+(Y de forma equivalente en `Expense.php`.)
+
+### Factories creadas
+
+**`database/factories/CategoryFactory.php`:**
+```php
+public function definition(): array
+{
+    return [
+        'name' => $this->faker->word(),
+        'user_id' => \App\Models\User::factory(),
+        'budget_limit' => $this->faker->randomFloat(2, 50, 500),
+    ];
+}
+```
+
+**`database/factories/ExpenseFactory.php`:**
+```php
+public function definition(): array
+{
+    return [
+        'amount' => $this->faker->randomFloat(2, 5, 200),
+        'description' => $this->faker->sentence(3),
+        'date' => $this->faker->dateTimeThisYear(),
+        'user_id' => User::factory(),
+        'category_id' => Category::factory(),
+    ];
+}
+```
+
+**Qué es una factory** — una clase que genera datos de prueba realistas pero falsos (mediante la librería Faker, incluida con Laravel), evitando tener que especificar manualmente cada campo de cada modelo de prueba dentro de cada test.
+
+**`'user_id' => User::factory()`** — si un test crea una categoría o un gasto sin especificar explícitamente a qué usuario pertenece, la factory genera automáticamente un usuario nuevo para satisfacer esa relación. Es un patrón habitual en factories que representan modelos con relaciones obligatorias.
+
+### Tests de Policies (`CategoryPolicyTest.php` y `ExpensePolicyTest.php`)
+
+Se creó un test por cada combinación relevante de acción (`view`, `update`, `delete`) y situación (dueño / no dueño), replicando de forma automatizada las comprobaciones que antes se habían hecho manualmente desde Tinker:
+
+```php
+it('impide a otro usuario ver una categoría ajena', function () {
+    $owner = User::factory()->create();
+    $otherUser = User::factory()->create();
+    $category = Category::factory()->create(['user_id' => $owner->id]);
+
+    expect($otherUser->can('view', $category))->toBeFalse();
+});
+```
+
+**`it('descripción', function () { ... })`** — la sintaxis característica de Pest: una descripción en lenguaje natural de qué comprueba el test, seguida del código que lo verifica.
+
+**`expect(...)->toBeTrue()` / `->toBeFalse()`** — las aserciones de Pest (equivalentes a `assertTrue()`/`assertFalse()` en la sintaxis clásica de PHPUnit, pero más legibles).
+
+Resultado: 4 tests para `Category` y 4 para `Expense`, los 8 en verde.
+
+### Tests de validación (`CategoryValidationTest.php`)
+
+A diferencia de los tests de Policies (que probaban el modelo de forma aislada), estos tests hacen peticiones HTTP reales contra la propia aplicación, comprobando la cadena completa: ruta, middleware, controlador y validación juntos.
+
+```php
+it('no permite crear una categoría sin nombre', function () {
+    $user = User::factory()->create();
+
+    $response = $this->actingAs($user)->postJson('/api/categories', [
+        'name' => '',
+    ]);
+
+    $response->assertStatus(422);
+    $response->assertJsonValidationErrors('name');
+});
+```
+
+**`$this->actingAs($user)`** — simula que la petición proviene de un usuario ya autenticado, sin necesitar iniciar sesión con contraseña dentro del propio test.
+
+**`->postJson(...)`** — ejecuta una petición HTTP simulada (sin salir realmente a la red) contra la aplicación, del mismo modo en que lo haría React con `fetch`.
+
+**`assertStatus(422)`** — confirma el código de respuesta HTTP exacto esperado (422, la convención de Laravel para errores de validación).
+
+**`assertJsonValidationErrors('name')`** — comprueba, además del código, que el cuerpo de la respuesta JSON señale específicamente el campo `name` como el causante del error, y no otro campo distinto.
+
+Se incluyó también un caso sin `actingAs`, para confirmar que sin autenticación la petición se rechaza con 401 antes incluso de llegar a la validación — verificando así, de forma automatizada, que el middleware `auth:sanctum` sigue protegiendo la ruta correctamente.
+
+Resultado: 4 tests, los 4 en verde.
+
+### Tests de agregaciones (`SummaryTest.php`)
+
+Estos tests cubren la parte más propensa a errores silenciosos del proyecto: un fallo en una agrupación SQL no lanza ninguna excepción, simplemente produce un número incorrecto sin ningún aviso.
+
+```php
+it('calcula correctamente el total gastado por categoría', function () {
+    $user = User::factory()->create();
+    $comida = Category::factory()->create(['user_id' => $user->id, 'name' => 'Comida']);
+    $transporte = Category::factory()->create(['user_id' => $user->id, 'name' => 'Transporte']);
+
+    Expense::factory()->create(['user_id' => $user->id, 'category_id' => $comida->id, 'amount' => 20]);
+    Expense::factory()->create(['user_id' => $user->id, 'category_id' => $comida->id, 'amount' => 30]);
+    Expense::factory()->create(['user_id' => $user->id, 'category_id' => $transporte->id, 'amount' => 15]);
+
+    $response = $this->actingAs($user)->getJson('/api/summary/by-category');
+
+    $comidaTotal = collect($response->json())->firstWhere('category_id', $comida->id);
+
+    expect((float) $comidaTotal['total'])->toBe(50.0);
+});
+```
+
+**`collect($response->json())`** — convierte la respuesta JSON en una **Collection** de Laravel, una estructura que ofrece numerosos métodos de manipulación de listas de datos (filtrar, buscar, transformar), más cómoda de usar dentro de un test que manipular un array plano de PHP a mano.
+
+**`firstWhere('category_id', $comida->id)`** — busca, dentro de la colección de resultados, el elemento cuyo `category_id` coincida con el de la categoría "Comida", sin depender del orden en que la API haya devuelto los resultados.
+
+El segundo test de este archivo verifica específicamente que los gastos de **otro usuario** (999€, deliberadamente un valor muy distinguible) no aparezcan mezclados en el resumen del usuario autenticado, confirmando que el filtrado por usuario sigue aplicándose correctamente incluso dentro de una consulta con agregaciones.
+
+Resultado: 2 tests, ambos en verde.
+
+### Resultado final de la suite completa
+
+```bash
+./vendor/bin/sail artisan test
+```
+
+**39 tests pasando, 80 aserciones, ejecutados en menos de 2 segundos**: los 25 tests originales generados por Breeze (autenticación, perfil) más los 14 tests propios (Policies, validación, agregaciones), todos corriendo juntos sin conflictos sobre la base de datos SQLite en memoria.
+
+---
+
+## 26. Glosario ampliado (tercera sesión)
+
+**`Schema::table(...)`** — método usado para modificar una tabla ya existente (añadir, eliminar o cambiar columnas), a diferencia de `Schema::create(...)`, reservado para tablas nuevas.
+
+**`withSum('relacion', 'columna')`** — atajo de Eloquent que añade, a cada resultado de una consulta, la suma de una columna de sus registros relacionados (por ejemplo, el gasto total de cada categoría), sin necesidad de escribir una consulta de agregación por separado.
+
+**Ziggy** — una librería incluida por defecto en las instalaciones de Breeze que permite generar URLs de rutas de Laravel por su nombre (`route('nombre')`) desde código JavaScript, en vez de escribirlas literalmente.
+
+**Factory (Eloquent)** — una clase que define cómo generar, de forma automática y con datos realistas pero falsos, instancias de prueba de un modelo, para usarlas en tests sin tener que especificar cada campo manualmente.
+
+**Faker** — la librería que las factories de Laravel usan por debajo para generar esos datos falsos (nombres, textos, números, fechas) de forma realista.
+
+**`HasFactory`** — el trait que debe incluirse en un modelo Eloquent para que pueda usarse con el método estático `::factory()`; no se añade automáticamente al crear un modelo con `artisan make:model`, salvo en el caso del modelo `User`, que Laravel genera con él ya incluido.
+
+**SQLite en memoria (`:memory:`)** — un modo de funcionamiento de SQLite donde la base de datos completa vive únicamente en memoria RAM durante la ejecución del programa, sin persistir en ningún archivo; habitual en proyectos Laravel para acelerar la ejecución de tests y evitar depender de un motor de base de datos externo como MySQL.
+
+**`RefreshDatabase`** — un trait de testing de Laravel que restablece automáticamente el estado de la base de datos antes de cada test, garantizando que ninguno de ellos vea datos dejados por otro test anterior (ni por los datos reales de desarrollo).
+
+**`$this->actingAs($usuario)`** — método disponible en los tests de Laravel para simular que una petición proviene de un usuario ya autenticado, sin necesidad de ejecutar un login real con contraseña dentro del test.
+
+**`postJson()` / `getJson()`** — métodos de testing que ejecutan peticiones HTTP simuladas (sin salir realmente a la red) contra la propia aplicación, permitiendo probar rutas, middleware, controladores y validación de forma conjunta, tal como los usaría un cliente real.
+
+**Collection (Laravel)** — una estructura de datos que envuelve un array y ofrece numerosos métodos encadenables para filtrar, transformar o buscar dentro de él (`firstWhere`, `pluck`, `map`, entre otros), usada tanto en el código de la aplicación como, en este caso, dentro de los propios tests.
+
+---
+
+## 27. Qué queda pendiente
+
+Actualizado tras la tercera sesión de trabajo:
+
+1. **Validación visual de errores** — mostrar en la interfaz los mensajes de error específicos que devuelve el backend cuando falla una validación, en vez de solo un mensaje genérico.
+2. **Editar el límite de presupuesto de una categoría ya existente** — actualmente el formulario de edición de categorías solo permite cambiar el nombre; el límite se puede definir al crear, pero no modificar después desde la interfaz.
+3. **Filtros en la interfaz** — ver los gastos de un mes concreto o de una categoría concreta, aprovechando que el backend ya soporta ese tipo de consultas con poco esfuerzo adicional.
+4. **Aviso al superar el presupuesto** — mostrar algún mensaje o notificación cuando un gasto nuevo hace que una categoría supere su límite definido.
+5. **Gastos recurrentes** — la posibilidad de marcar un gasto como periódico (alquiler, suscripciones), para no tener que introducirlo manualmente cada mes.
+6. **Exportar datos** — un botón para descargar los gastos (por ejemplo, de un mes concreto) en formato CSV.
+7. **Paginación** — el endpoint `index()` de gastos trae actualmente todos los registros de golpe; conviene limitar y paginar los resultados antes de que la cantidad de datos crezca.
+8. **Capturas de pantalla en el README** — para mostrar visualmente cómo se ve la aplicación (por ejemplo, el listado con las barras de progreso y los gráficos) a quien visite el repositorio, sin depender solo de la descripción en texto.
+9. **Despliegue en un servicio gratuito** (Railway, Render, u otro similar) — para disponer de una URL pública y funcionando, sin que quien revise el proyecto tenga que clonarlo y levantarlo localmente.
 
 ### Completado hasta ahora (para referencia rápida)
 
@@ -1704,3 +2138,6 @@ Actualizado tras la segunda sesión de trabajo:
 - ✅ Resumen agregado (por categoría y por mes) con gráficos en Recharts
 - ✅ Proyecto subido a GitHub, con README específico del proyecto
 - ✅ Policies de autorización, verificadas en ambos sentidos (dueño / no dueño)
+- ✅ Límite de presupuesto opcional por categoría, con barra de progreso visual (verde/amarillo/rojo)
+- ✅ Enlace de navegación a "Gastos" en el menú superior (escritorio y móvil)
+- ✅ Suite de 39 tests automatizados con Pest (Policies, validación, agregaciones), corriendo sobre SQLite en memoria
