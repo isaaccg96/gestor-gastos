@@ -32,7 +32,9 @@ Esta guía documenta, paso a paso y en orden real, todo lo que se hizo para mont
 24. [Enlace de navegación a Gastos](#24-enlace-de-navegación-a-gastos)
 25. [Suite de tests automatizados con Pest](#25-suite-de-tests-automatizados-con-pest)
 26. [Glosario ampliado (tercera sesión)](#26-glosario-ampliado-tercera-sesión)
-27. [Qué queda pendiente](#27-qué-queda-pendiente)
+27. [Despliegue en producción con Railway](#27-despliegue-en-producción-con-railway)
+28. [Glosario ampliado (cuarta sesión)](#28-glosario-ampliado-cuarta-sesión)
+29. [Qué queda pendiente](#29-qué-queda-pendiente)
 
 ---
 
@@ -2114,19 +2116,230 @@ Resultado: 2 tests, ambos en verde.
 
 ---
 
-## 27. Qué queda pendiente
+## 27. Despliegue en producción con Railway
 
-Actualizado tras la tercera sesión de trabajo:
+En una cuarta sesión, se desplegó el proyecto en [Railway](https://railway.com), obteniendo una URL pública accesible sin necesidad de clonar el repositorio ni instalar nada localmente.
+
+### Creación del proyecto en Railway
+
+1. Cuenta creada en Railway iniciando sesión con GitHub (necesario de todas formas para dar acceso al repositorio).
+2. **New Project** → **GitHub Repository** → selección de `gestor-gastos`.
+
+Railway detecta automáticamente el tipo de proyecto (en este caso, mediante una herramienta llamada **Railpack**, sucesora de Nixpacks) y realiza un primer intento de build sin configuración adicional.
+
+### Problema 1: conflicto de dependencias de npm (de nuevo)
+
+**Error en el build:**
+```
+npm error ERESOLVE could not resolve
+...
+peer vite@"^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0" from @vitejs/plugin-react@4.7.0
+```
+
+El mismo conflicto de versiones entre `vite` y `@vitejs/plugin-react` que ya había aparecido durante la instalación local de Breeze (ver sección 8), esta vez en el entorno de build de Railway, que ejecuta `npm install` sin ninguna bandera especial.
+
+**Primer intento de solución (no funcionó de forma fiable): `nixpacks.toml`**
+
+Se creó un archivo en la raíz del proyecto para especificar explícitamente los comandos de instalación:
+```toml
+[phases.install]
+cmds = [
+    "composer install --no-dev --optimize-autoloader",
+    "npm install --legacy-peer-deps"
+]
+
+[phases.build]
+cmds = ["npm run build"]
+```
+A pesar de subir este archivo correctamente (confirmado con `git log` y `cat`), el siguiente intento de build mostró exactamente el mismo error, sugiriendo que Railway no estaba aplicando esta configuración personalizada (posiblemente por estar usando ya el sistema Railpack en vez de Nixpacks, que no necesariamente respeta el mismo formato de archivo).
+
+**Solución que sí funcionó: forzar la configuración a nivel de npm con `.npmrc`**
+
+En vez de depender de que la herramienta de build de Railway ejecutase el comando exacto deseado, se añadió una línea al archivo `.npmrc` existente en la raíz del proyecto:
+```
+legacy-peer-deps=true
+```
+
+Un archivo `.npmrc` es leído automáticamente por **cualquier** ejecución de `npm install`, sin importar qué herramienta la invoque ni con qué flags exactos se llame — a diferencia del `nixpacks.toml`, que depende de que el sistema de build respete ese formato de configuración concreto.
+
+Tras subir este cambio, y **borrar y recrear el proyecto en Railway desde cero** (para evitar cualquier caché o estado del intento anterior), el `npm install` se completó correctamente.
+
+### Problema 2: incompatibilidad de versión de PHP
+
+**Error en el build**, esta vez durante `composer install`:
+```
+Your lock file does not contain a compatible set of packages. Please run composer update.
+...
+- symfony/http-foundation v8.1.6 requires php >=8.4.1 -> your php version (8.3.33) does not satisfy that requirement.
+- laravel/framework v13.29.0 requires symfony/http-foundation ^7.4.0 || ^8.0.0
+```
+
+**Causa:** el `composer.json` del proyecto declaraba `"php": "^8.3"`, así que Railway aprovisionó PHP 8.3. Sin embargo, el `composer.lock` (generado originalmente en el entorno de Sail, que corre PHP 8.5) contenía versiones de paquetes de Laravel y Symfony que en realidad exigen PHP 8.4 o superior. La restricción declarada en `composer.json` había quedado desactualizada respecto a lo que las dependencias resueltas realmente necesitaban.
+
+**Solución:**
+```bash
+sed -i 's/"php": "\^8.3"/"php": "^8.4"/' composer.json
+```
+Al subir este cambio, Railway aprovisionó una versión de PHP compatible (8.4 o superior) y el `composer install` se completó sin errores.
+
+### Configuración de la base de datos en Railway
+
+1. Dentro del mismo proyecto de Railway (identificado con el nombre autogenerado "lively-magic"), se añadió un nuevo servicio: **+ New** → **Database** → **Add MySQL**.
+2. Railway generó automáticamente credenciales de conexión bajo variables con nombres como `MYSQLHOST`, `MYSQLPORT`, `MYSQLDATABASE`, `MYSQLUSER`, `MYSQLPASSWORD`.
+
+**Conexión mediante referencias de variables**, en el servicio de la aplicación (no en el de la base de datos), pestaña **Variables**:
+```
+DB_CONNECTION=mysql
+DB_HOST=${{MySQL.MYSQLHOST}}
+DB_PORT=${{MySQL.MYSQLPORT}}
+DB_DATABASE=${{MySQL.MYSQLDATABASE}}
+DB_USERNAME=${{MySQL.MYSQLUSER}}
+DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
+```
+
+La sintaxis `${{NombreDelServicio.NOMBRE_VARIABLE}}` es una **referencia de variable** propia de Railway: en vez de copiar un valor fijo, apunta al valor actual de una variable de otro servicio del mismo proyecto, de forma que si Railway regenerase alguna credencial en el futuro, la aplicación seguiría funcionando sin necesitar ningún cambio manual. `MySQL`, en la referencia, debe coincidir exactamente (mayúsculas incluidas) con el nombre real que tenga el servicio de base de datos dentro del proyecto.
+
+Se detectó, entre las variables sugeridas automáticamente por Railway, que `DB_CONNECTION` había quedado con el valor `sqlite` (heredado probablemente de algún valor por defecto de `.env.example`); se corrigió manualmente a `mysql`.
+
+### Variables de entorno de producción
+
+Además de las de base de datos, se configuraron:
+```
+APP_ENV=production
+APP_DEBUG=false
+```
+
+**Por qué es importante `APP_DEBUG=false` en producción:** con `APP_DEBUG=true` (el valor usado en desarrollo local), cualquier error no controlado muestra una página con el detalle interno completo del fallo — rutas de archivos del servidor, fragmentos de código fuente, y en ocasiones datos sensibles presentes en el contexto del error. Es una herramienta de desarrollo, pero supone un riesgo de seguridad real si queda activa de cara al público. Con `APP_DEBUG=false`, un error simplemente muestra una página genérica, sin revelar información interna.
+
+### Generación de la `APP_KEY`
+
+La `APP_KEY` es la clave secreta que Laravel usa para cifrar sesiones y otros datos sensibles; no debe escribirse a mano. Se generó localmente, sin sobrescribir el `.env` de desarrollo:
+```bash
+./vendor/bin/sail artisan key:generate --show
+```
+El flag `--show` imprime la clave generada en pantalla en vez de escribirla directamente en el archivo `.env` local. El valor resultante (con el prefijo `base64:`) se copió manualmente a la variable `APP_KEY` en Railway.
+
+### Generación del dominio público
+
+En el servicio de la aplicación, pestaña **Settings** → sección **Networking** → **Generate Domain**. Railway asignó automáticamente una URL con formato `gestor-gastos-production-2915.up.railway.app`. Ese valor se usó para completar la variable `APP_URL`:
+```
+APP_URL=https://gestor-gastos-production-2915.up.railway.app
+```
+
+### Problema 3: contenido mixto (HTTP dentro de una página HTTPS)
+
+Al visitar la URL pública por primera vez, la página cargaba (título "Laravel" visible) pero aparecía en blanco, con errores en la consola del navegador:
+```
+Se ha bloqueado la carga del contenido activo mixto "http://.../build/assets/app-....js"
+```
+
+**Causa:** Railway coloca la aplicación detrás de un proxy que gestiona el cifrado HTTPS de cara al visitante, pero reenvía la petición internamente al contenedor por HTTP. Sin indicación adicional, Laravel generaba las URLs de los assets (CSS/JS) con el esquema `http://`, lo que el navegador bloquea al detectar que el resto de la página se sirvió por `https://` — mezclar ambos esquemas en una misma página es un riesgo de seguridad que los navegadores modernos impiden por defecto.
+
+**Solución**, en `app/Providers/AppServiceProvider.php`:
+```php
+use Illuminate\Support\Facades\URL;
+
+public function boot(): void
+{
+    Vite::prefetch(concurrency: 3);
+
+    if ($this->app->environment('production')) {
+        URL::forceScheme('https');
+    }
+}
+```
+
+`URL::forceScheme('https')` indica a Laravel que genere siempre URLs con `https://`, independientemente de cómo perciba internamente el esquema de la petición entrante. Se aplicó únicamente en el entorno `production`, para no afectar al desarrollo local con Sail (donde la aplicación sí trabaja legítimamente sobre `http://localhost`).
+
+### Verificación de las migraciones mediante Railway CLI
+
+Se instaló la CLI oficial de Railway para poder ejecutar comandos directamente contra el entorno desplegado:
+```bash
+curl -fsSL https://railway.com/install.sh | sh
+source "$HOME/.railway/env"
+railway login
+railway link
+```
+
+**Un matiz importante descubierto durante la verificación:** `railway run <comando>` toma las variables de entorno de Railway, pero ejecuta el comando usando el PHP **local** de la máquina del desarrollador, no el del contenedor desplegado. Al ejecutar `railway run php artisan migrate:status`, apareció:
+```
+could not find driver (Connection: mysql, Host: mysql.railway.internal, ...)
+```
+Esto ocurrió porque el PHP del sistema Ubuntu local no tiene instalada la extensión `pdo_mysql` (el PHP habitual de este proyecto vive dentro del contenedor de Sail, no en el sistema anfitrión).
+
+**La forma correcta de ejecutar comandos dentro del entorno real:** `railway ssh`, que abre una sesión de línea de comandos **dentro del propio contenedor desplegado** en Railway (fue necesario registrar la clave SSH pública, la misma ya usada con GitHub, la primera vez que se usó este comando):
+```bash
+railway ssh
+php artisan migrate:status
+```
+
+El resultado mostró que **todas las migraciones ya estaban aplicadas**, incluida la de `add_budget_limit_to_categories_table`. Esto reveló que Railway había ejecutado las migraciones automáticamente como parte del script de arranque del contenedor (visible como `/start-container.sh` en el log de build), sin necesidad de un paso manual adicional.
+
+### Problema 4: error 401 en las llamadas a la API desde producción
+
+Tras confirmar que el registro, login y Dashboard funcionaban correctamente, la página de gastos mostraba un error de JavaScript:
+```
+Uncaught TypeError: a.map is not a function
+```
+
+**Diagnóstico:** revisando la pestaña Network del navegador, las peticiones a `/api/categories`, `/api/expenses`, `/api/summary/by-category` y `/api/summary/by-month` devolvían todas **401 (Unauthenticated)**. El componente React, al recibir un objeto de error de Laravel en vez de un array de datos, fallaba al intentar ejecutar `.map()` sobre él.
+
+**Causa:** el mismo tipo de problema resuelto en la sección 13, pero esta vez a nivel de dominio en vez de middleware. La lista de dominios "stateful" de Sanctum (los que pueden autenticarse mediante cookie de sesión) incluye, por defecto, `localhost` y variantes locales, pero **no** el dominio público de Railway. Sin ese dominio en la lista, Sanctum trataba las peticiones desde la propia aplicación en producción como si vinieran de un cliente externo no identificado.
+
+**Solución** — variable de entorno añadida en Railway:
+```
+SANCTUM_STATEFUL_DOMAINS=gestor-gastos-production-2915.up.railway.app
+```
+
+Esto sobrescribe el valor por defecto de `config/sanctum.php`, añadiendo explícitamente el dominio de producción a la lista de orígenes de confianza para autenticación por cookie.
+
+### Verificación final y actualización del README
+
+Tras aplicar la corrección anterior, se confirmó el flujo completo en producción: login, creación y edición de categorías con límite de presupuesto, creación de gastos, visualización correcta de la barra de progreso y de los gráficos de resumen.
+
+Se actualizó `README.md` añadiendo un enlace de demo en vivo al principio del documento, una sección para ejecutar los tests, y la mención de Railway como plataforma de despliegue, de forma que cualquier visitante del repositorio pueda probar la aplicación real sin necesidad de clonar ni instalar nada localmente.
+
+---
+
+## 28. Glosario ampliado (cuarta sesión)
+
+**Railway** — una plataforma de despliegue en la nube que permite alojar aplicaciones conectando directamente un repositorio de GitHub, sin necesidad de configurar manualmente servidores; detecta automáticamente el tipo de proyecto y gestiona el proceso de build y despliegue.
+
+**Railpack / Nixpacks** — herramientas usadas por Railway para analizar el código fuente de un proyecto y generar automáticamente los pasos necesarios para construir un entorno de ejecución (instalación de dependencias, compilación de assets, etc.), sin que el desarrollador tenga que escribir un `Dockerfile` a mano.
+
+**`.npmrc`** — un archivo de configuración de npm que se aplica automáticamente a cualquier instalación de dependencias realizada dentro de ese proyecto, independientemente de la herramienta o el comando exacto que la invoque.
+
+**Variable de entorno (en un servicio en la nube)** — un valor de configuración (credenciales, URLs, modos de funcionamiento) que se inyecta en la aplicación en tiempo de ejecución, en vez de escribirse directamente en el código fuente; permite tener configuraciones distintas entre entornos (local, producción) sin duplicar código.
+
+**Referencia de variable (`${{Servicio.VARIABLE}}`)** — una sintaxis propia de Railway que permite que la variable de un servicio tome, dinámicamente, el valor de una variable definida en otro servicio del mismo proyecto, en vez de copiar ese valor de forma fija.
+
+**`APP_DEBUG`** — variable de entorno de Laravel que controla si, ante un error no controlado, se muestra información técnica detallada (útil en desarrollo) o un mensaje genérico sin detalles internos (obligatorio en producción, por motivos de seguridad).
+
+**Contenido mixto ("mixed content")** — una situación en la que una página cargada por HTTPS intenta cargar recursos adicionales (imágenes, scripts, hojas de estilo) por HTTP sin cifrar; los navegadores modernos bloquean estos recursos por defecto, al considerarlo un riesgo de seguridad.
+
+**`URL::forceScheme('https')`** — una instrucción de Laravel que fuerza que todas las URLs generadas por la aplicación usen el esquema HTTPS, útil cuando la aplicación corre detrás de un proxy que gestiona el cifrado de forma transparente y por tanto la petición interna que recibe Laravel podría parecer no cifrada.
+
+**Railway CLI** — una herramienta de línea de comandos que permite interactuar con los proyectos de Railway desde la terminal local: vincular un proyecto (`railway link`), ejecutar comandos usando las variables de entorno remotas (`railway run`), o abrir una sesión directamente dentro del contenedor desplegado (`railway ssh`).
+
+**`railway run` vs. `railway ssh`** — `railway run <comando>` ejecuta el comando indicado usando el entorno de variables de Railway, pero con los binarios (PHP, Node, etc.) de la máquina local; `railway ssh` conecta directamente a una sesión de línea de comandos dentro del propio contenedor ya desplegado, con todos sus binarios y extensiones reales. Para comandos que dependen de extensiones específicas del entorno de producción (como `pdo_mysql`), `railway ssh` es la opción fiable.
+
+**`SANCTUM_STATEFUL_DOMAINS`** — la variable de entorno que define qué dominios pueden autenticarse ante la API de Laravel mediante cookies de sesión (en vez de tokens), usada por Laravel Sanctum; debe incluir explícitamente cualquier dominio de producción desde el que la propia aplicación SPA vaya a consumir su API.
+
+---
+
+## 29. Qué queda pendiente
+
+Actualizado tras la cuarta sesión de trabajo (despliegue):
 
 1. **Validación visual de errores** — mostrar en la interfaz los mensajes de error específicos que devuelve el backend cuando falla una validación, en vez de solo un mensaje genérico.
-2. **Editar el límite de presupuesto de una categoría ya existente** — actualmente el formulario de edición de categorías solo permite cambiar el nombre; el límite se puede definir al crear, pero no modificar después desde la interfaz.
-3. **Filtros en la interfaz** — ver los gastos de un mes concreto o de una categoría concreta, aprovechando que el backend ya soporta ese tipo de consultas con poco esfuerzo adicional.
+2. **Editar el límite de presupuesto de una categoría ya existente** — actualmente el formulario de edición de categorías solo permite cambiar el nombre.
+3. **Filtros en la interfaz** — ver los gastos de un mes concreto o de una categoría concreta.
 4. **Aviso al superar el presupuesto** — mostrar algún mensaje o notificación cuando un gasto nuevo hace que una categoría supere su límite definido.
-5. **Gastos recurrentes** — la posibilidad de marcar un gasto como periódico (alquiler, suscripciones), para no tener que introducirlo manualmente cada mes.
-6. **Exportar datos** — un botón para descargar los gastos (por ejemplo, de un mes concreto) en formato CSV.
-7. **Paginación** — el endpoint `index()` de gastos trae actualmente todos los registros de golpe; conviene limitar y paginar los resultados antes de que la cantidad de datos crezca.
-8. **Capturas de pantalla en el README** — para mostrar visualmente cómo se ve la aplicación (por ejemplo, el listado con las barras de progreso y los gráficos) a quien visite el repositorio, sin depender solo de la descripción en texto.
-9. **Despliegue en un servicio gratuito** (Railway, Render, u otro similar) — para disponer de una URL pública y funcionando, sin que quien revise el proyecto tenga que clonarlo y levantarlo localmente.
+5. **Gastos recurrentes** — la posibilidad de marcar un gasto como periódico (alquiler, suscripciones).
+6. **Exportar datos** — un botón para descargar los gastos en formato CSV.
+7. **Paginación** — el endpoint `index()` de gastos trae actualmente todos los registros de golpe.
+8. **Capturas de pantalla en el README** — para mostrar visualmente cómo se ve la aplicación, complementando el enlace de demo en vivo ya añadido.
+9. **Poblar la demo en vivo con datos de ejemplo neutrales** — crear una cuenta de demostración con categorías y gastos ficticios (no datos personales reales), para que quien visite el enlace público vea la aplicación ya "usada" en vez de completamente vacía.
 
 ### Completado hasta ahora (para referencia rápida)
 
@@ -2141,3 +2354,5 @@ Actualizado tras la tercera sesión de trabajo:
 - ✅ Límite de presupuesto opcional por categoría, con barra de progreso visual (verde/amarillo/rojo)
 - ✅ Enlace de navegación a "Gastos" en el menú superior (escritorio y móvil)
 - ✅ Suite de 39 tests automatizados con Pest (Policies, validación, agregaciones), corriendo sobre SQLite en memoria
+- ✅ Proyecto desplegado en producción en Railway, con URL pública, base de datos MySQL gestionada, HTTPS forzado y Sanctum configurado correctamente para el dominio de producción
+- ✅ README actualizado con enlace de demo en vivo
