@@ -16,6 +16,9 @@ import {
 export default function Expenses() {
     const [categories, setCategories] = useState([]);
     const [expenses, setExpenses] = useState([]);
+    const [expensesPage, setExpensesPage] = useState(1);
+    const [expensesLastPage, setExpensesLastPage] = useState(1);
+
     const [summaryByCategory, setSummaryByCategory] = useState([]);
     const [summaryByMonth, setSummaryByMonth] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -57,8 +60,8 @@ export default function Expenses() {
         }).then((res) => res.json());
     };
 
-    const fetchExpenses = () => {
-        return fetch('/api/expenses', {
+    const fetchExpenses = (page = 1) => {
+        return fetch(`/api/expenses?page=${page}`, {
             credentials: 'include',
             headers: { Accept: 'application/json' },
         }).then((res) => res.json());
@@ -78,11 +81,11 @@ export default function Expenses() {
         }).then((res) => res.json());
     };
 
-    const loadAll = () => {
+    const loadAll = (page = expensesPage) => {
         setLoading(true);
         Promise.all([
             fetchCategories(),
-            fetchExpenses(),
+            fetchExpenses(page),
             fetchSummaryByCategory(),
             fetchSummaryByMonth(),
         ])
@@ -94,7 +97,9 @@ export default function Expenses() {
                     summaryByMonthData,
                 ]) => {
                     setCategories(categoriesData);
-                    setExpenses(expensesData);
+                    setExpenses(expensesData.data);
+                    setExpensesPage(expensesData.current_page);
+                    setExpensesLastPage(expensesData.last_page);
                     setSummaryByCategory(summaryByCategoryData);
                     setSummaryByMonth(summaryByMonthData);
                     setLoading(false);
@@ -283,6 +288,11 @@ export default function Expenses() {
                 loadAll();
             })
             .catch((err) => setError(err.message));
+    };
+
+    const goToPage = (page) => {
+        if (page < 1 || page > expensesLastPage) return;
+        loadAll(page);
     };
 
     // Datos formateados para los gráficos
@@ -812,6 +822,28 @@ export default function Expenses() {
                                         </li>
                                     ))}
                                 </ul>
+                            )}
+
+                            {!loading && expensesLastPage > 1 && (
+                                <div className="mt-4 flex items-center justify-center gap-4">
+                                    <button
+                                        onClick={() => goToPage(expensesPage - 1)}
+                                        disabled={expensesPage === 1}
+                                        className="text-sm text-gray-600 hover:underline disabled:opacity-30"
+                                    >
+                                        Anterior
+                                    </button>
+                                    <span className="text-sm text-gray-500">
+                                        Página {expensesPage} de {expensesLastPage}
+                                    </span>
+                                    <button
+                                        onClick={() => goToPage(expensesPage + 1)}
+                                        disabled={expensesPage === expensesLastPage}
+                                        className="text-sm text-gray-600 hover:underline disabled:opacity-30"
+                                    >
+                                        Siguiente
+                                    </button>
+                                </div>
                             )}
                         </div>
                     </div>

@@ -9,7 +9,11 @@ class ExpenseController extends Controller
 {
     public function index(Request $request)
     {
-        return $request->user()->expenses()->with('category')->latest('date')->get();
+        return $request->user()
+            ->expenses()
+            ->with('category')
+            ->latest('date')
+            ->paginate(10);
     }
 
     public function store(Request $request)
