@@ -35,6 +35,7 @@ export default function Expenses() {
 
     const [editingCategoryId, setEditingCategoryId] = useState(null);
     const [editingCategoryName, setEditingCategoryName] = useState('');
+    const [editingCategoryBudget, setEditingCategoryBudget] = useState('');
 
     const [editingExpenseId, setEditingExpenseId] = useState(null);
     const [editingExpense, setEditingExpense] = useState({
@@ -163,11 +164,13 @@ export default function Expenses() {
     const startEditingCategory = (category) => {
         setEditingCategoryId(category.id);
         setEditingCategoryName(category.name);
+        setEditingCategoryBudget(category.budget_limit ?? '');
     };
 
     const cancelEditingCategory = () => {
         setEditingCategoryId(null);
         setEditingCategoryName('');
+        setEditingCategoryBudget('');
     };
 
     const handleUpdateCategory = (e) => {
@@ -181,7 +184,10 @@ export default function Expenses() {
                 Accept: 'application/json',
                 'X-XSRF-TOKEN': getCsrfToken(),
             },
-            body: JSON.stringify({ name: editingCategoryName }),
+            body: JSON.stringify({
+                name: editingCategoryName,
+                budget_limit: editingCategoryBudget || null,
+            }),
         })
             .then((res) => {
                 if (!res.ok)
@@ -422,25 +428,29 @@ export default function Expenses() {
                                             {editingCategoryId ===
                                             category.id ? (
                                                 <form
-                                                    onSubmit={
-                                                        handleUpdateCategory
-                                                    }
+                                                    onSubmit={handleUpdateCategory}
                                                     className="flex flex-1 gap-2"
                                                 >
                                                     <input
                                                         type="text"
-                                                        value={
-                                                            editingCategoryName
-                                                        }
+                                                        value={editingCategoryName}
                                                         onChange={(e) =>
-                                                            setEditingCategoryName(
-                                                                e.target
-                                                                    .value,
-                                                            )
+                                                            setEditingCategoryName(e.target.value)
                                                         }
                                                         className="flex-1 rounded border-gray-300 shadow-sm"
                                                         required
                                                         autoFocus
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={editingCategoryBudget}
+                                                        onChange={(e) =>
+                                                            setEditingCategoryBudget(e.target.value)
+                                                        }
+                                                        placeholder="Límite"
+                                                        className="w-32 rounded border-gray-300 shadow-sm"
                                                     />
                                                     <button
                                                         type="submit"
@@ -450,9 +460,7 @@ export default function Expenses() {
                                                     </button>
                                                     <button
                                                         type="button"
-                                                        onClick={
-                                                            cancelEditingCategory
-                                                        }
+                                                        onClick={cancelEditingCategory}
                                                         className="text-sm text-gray-500 hover:underline"
                                                     >
                                                         Cancelar
