@@ -316,6 +316,37 @@ export default function Expenses() {
         return { spent, limit, percentage, color };
     };
 
+    const getOverallBudgetProgress = () => {
+        const categoriesWithBudget = categories.filter(
+            (c) => parseFloat(c.budget_limit) > 0,
+        );
+
+        if (categoriesWithBudget.length === 0) {
+            return null;
+        }
+
+        const totalLimit = categoriesWithBudget.reduce(
+            (sum, c) => sum + parseFloat(c.budget_limit),
+            0,
+        );
+
+        const totalSpent = categoriesWithBudget.reduce(
+            (sum, c) => sum + (parseFloat(c.expenses_sum_amount) || 0),
+            0,
+        );
+
+        const percentage = Math.min((totalSpent / totalLimit) * 100, 100);
+
+        let color = 'bg-green-500';
+        if (percentage >= 100) {
+            color = 'bg-red-500';
+        } else if (percentage >= 80) {
+            color = 'bg-yellow-500';
+        }
+
+        return { spent: totalSpent, limit: totalLimit, percentage, color };
+    };
+
     return (
         <AuthenticatedLayout
             header={
@@ -372,6 +403,26 @@ export default function Expenses() {
                                     </LineChart>
                                 </ResponsiveContainer>
                             </div>
+                        </div>
+                    )}
+
+                    {!loading && getOverallBudgetProgress() && (
+                        <div className="overflow-hidden bg-white p-6 shadow-sm sm:rounded-lg">
+                            <h3 className="mb-2 text-lg font-medium">
+                                Presupuesto total
+                            </h3>
+                            <div className="h-3 w-full overflow-hidden rounded-full bg-gray-200">
+                                <div
+                                    className={`h-full ${getOverallBudgetProgress().color} transition-all`}
+                                    style={{
+                                        width: `${getOverallBudgetProgress().percentage}%`,
+                                    }}
+                                />
+                            </div>
+                            <p className="mt-1 text-sm text-gray-500">
+                                {getOverallBudgetProgress().spent.toFixed(2)}€ de{' '}
+                                {getOverallBudgetProgress().limit.toFixed(2)}€
+                            </p>
                         </div>
                     )}
 
