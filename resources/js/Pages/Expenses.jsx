@@ -452,19 +452,21 @@ export default function Expenses() {
                                                         placeholder="Límite"
                                                         className="w-32 rounded border-gray-300 shadow-sm"
                                                     />
-                                                    <button
-                                                        type="submit"
-                                                        className="text-sm text-green-600 hover:underline"
-                                                    >
-                                                        Guardar
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={cancelEditingCategory}
-                                                        className="text-sm text-gray-500 hover:underline"
-                                                    >
-                                                        Cancelar
-                                                    </button>
+                                                    <div className="flex gap-3">
+                                                        <button
+                                                            type="submit"
+                                                            className="text-sm text-green-600 hover:underline"
+                                                        >
+                                                            Guardar
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={cancelEditingCategory}
+                                                            className="text-sm text-gray-500 hover:underline"
+                                                        >
+                                                            Cancelar
+                                                        </button>
+                                                    </div>
                                                 </form>
                                             ) : (
                                                 <>
