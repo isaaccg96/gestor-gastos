@@ -382,9 +382,9 @@ export default function Expenses() {
                                 Categorías
                             </h3>
 
-                            <form
+                           <form
                                 onSubmit={handleCategorySubmit}
-                                className="mb-4 flex gap-2"
+                                className="mb-4 flex flex-col gap-2 sm:flex-row"
                             >
                                 <input
                                     type="text"
@@ -427,9 +427,9 @@ export default function Expenses() {
                                         >
                                             {editingCategoryId ===
                                             category.id ? (
-                                                <form
+                                               <form
                                                     onSubmit={handleUpdateCategory}
-                                                    className="flex flex-1 gap-2"
+                                                    className="flex flex-1 flex-col gap-2 sm:flex-row"
                                                 >
                                                     <input
                                                         type="text"
