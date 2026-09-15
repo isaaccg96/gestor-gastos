@@ -427,9 +427,9 @@ export default function Expenses() {
                                         >
                                             {editingCategoryId ===
                                             category.id ? (
-                                               <form
+                                                <form
                                                     onSubmit={handleUpdateCategory}
-                                                    className="flex flex-1 flex-col gap-2 sm:flex-row"
+                                                    className="flex flex-1 flex-col items-start gap-2 sm:flex-row sm:items-center"
                                                 >
                                                     <input
                                                         type="text"
