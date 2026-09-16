@@ -13,16 +13,63 @@ import {
     CartesianGrid,
 } from 'recharts';
 
+const themes = {
+    default: {
+        bg: 'bg-gray-100',
+        card: 'bg-white',
+        text: 'text-gray-900',
+        heading: 'text-gray-800',
+        muted: 'text-gray-500',
+        border: 'border-gray-200',
+        track: 'bg-gray-200',
+        button: 'bg-gray-800 hover:bg-gray-900',
+        buttonText: 'text-white',
+    },
+    pink: {
+        bg: 'bg-pink-50',
+        card: 'bg-white',
+        text: 'text-gray-900',
+        heading: 'text-pink-900',
+        muted: 'text-pink-400',
+        border: 'border-pink-200',
+        track: 'bg-pink-100',
+        button: 'bg-pink-400 hover:bg-pink-500',
+        buttonText: 'text-white',
+    },
+    blue: {
+        bg: 'bg-blue-50',
+        card: 'bg-white',
+        text: 'text-gray-900',
+        heading: 'text-blue-900',
+        muted: 'text-blue-400',
+        border: 'border-blue-200',
+        track: 'bg-blue-100',
+        button: 'bg-blue-700 hover:bg-blue-800',
+        buttonText: 'text-white',
+    },
+    green: {
+        bg: 'bg-emerald-950',
+        card: 'bg-emerald-900',
+        text: 'text-emerald-50',
+        heading: 'text-emerald-50',
+        muted: 'text-emerald-300',
+        border: 'border-emerald-700',
+        track: 'bg-emerald-800',
+        button: 'bg-emerald-600 hover:bg-emerald-500',
+        buttonText: 'text-white',
+    },
+};
+
 export default function Expenses() {
     const [categories, setCategories] = useState([]);
     const [expenses, setExpenses] = useState([]);
-    const [expensesPage, setExpensesPage] = useState(1);
-    const [expensesLastPage, setExpensesLastPage] = useState(1);
-
     const [summaryByCategory, setSummaryByCategory] = useState([]);
     const [summaryByMonth, setSummaryByMonth] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
+    const [themeKey, setThemeKey] = useState('default');
+    const theme = themes[themeKey] || themes.default;
 
     const [newCategoryName, setNewCategoryName] = useState('');
     const [newCategoryBudget, setNewCategoryBudget] = useState('');
@@ -47,6 +94,25 @@ export default function Expenses() {
         date: '',
         category_id: '',
     });
+
+    const [expensesPage, setExpensesPage] = useState(1);
+    const [expensesLastPage, setExpensesLastPage] = useState(1);
+
+    useEffect(() => {
+        const stored = localStorage.getItem('gastos-theme');
+        if (stored && themes[stored]) {
+            setThemeKey(stored);
+        }
+
+        const handleThemeChange = () => {
+            const updated = localStorage.getItem('gastos-theme');
+            setThemeKey(updated && themes[updated] ? updated : 'default');
+        };
+
+        window.addEventListener('themechange', handleThemeChange);
+        return () =>
+            window.removeEventListener('themechange', handleThemeChange);
+    }, []);
 
     const getCsrfToken = () => {
         const match = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
@@ -295,7 +361,6 @@ export default function Expenses() {
         loadAll(page);
     };
 
-    // Datos formateados para los gráficos
     const categoryChartData = summaryByCategory.map((item) => ({
         name: item.category?.name || 'Sin categoría',
         total: parseFloat(item.total),
@@ -357,6 +422,8 @@ export default function Expenses() {
         return { spent: totalSpent, limit: totalLimit, percentage, color };
     };
 
+    const overallProgress = getOverallBudgetProgress();
+
     return (
         <AuthenticatedLayout
             header={
@@ -366,7 +433,7 @@ export default function Expenses() {
             }
         >
             <Head title="Gastos" />
-            <div className="py-12">
+            <div className={`py-12 min-h-screen ${theme.bg}`}>
                 <div className="mx-auto max-w-7xl space-y-6 sm:px-6 lg:px-8">
                     {error && (
                         <div className="rounded bg-red-50 p-4 text-red-600">
@@ -374,11 +441,15 @@ export default function Expenses() {
                         </div>
                     )}
 
-                    {/* RESUMEN / GRÁFICOS */}
+                    {/* GRÁFICOS */}
                     {!loading && categoryChartData.length > 0 && (
                         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                            <div className="overflow-hidden bg-white p-6 shadow-sm sm:rounded-lg">
-                                <h3 className="mb-4 text-lg font-medium">
+                            <div
+                                className={`overflow-hidden ${theme.card} p-6 shadow-sm sm:rounded-lg`}
+                            >
+                                <h3
+                                    className={`mb-4 text-lg font-medium ${theme.heading}`}
+                                >
                                     Gasto por categoría
                                 </h3>
                                 <ResponsiveContainer width="100%" height={250}>
@@ -387,16 +458,17 @@ export default function Expenses() {
                                         <XAxis dataKey="name" />
                                         <YAxis />
                                         <Tooltip />
-                                        <Bar
-                                            dataKey="total"
-                                            fill="#1f2937"
-                                        />
+                                        <Bar dataKey="total" fill="#1f2937" />
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>
 
-                            <div className="overflow-hidden bg-white p-6 shadow-sm sm:rounded-lg">
-                                <h3 className="mb-4 text-lg font-medium">
+                            <div
+                                className={`overflow-hidden ${theme.card} p-6 shadow-sm sm:rounded-lg`}
+                            >
+                                <h3
+                                    className={`mb-4 text-lg font-medium ${theme.heading}`}
+                                >
                                     Gasto por mes
                                 </h3>
                                 <ResponsiveContainer width="100%" height={250}>
@@ -416,36 +488,47 @@ export default function Expenses() {
                         </div>
                     )}
 
-                    {!loading && getOverallBudgetProgress() && (
-                        <div className="overflow-hidden bg-white p-6 shadow-sm sm:rounded-lg">
-                            <h3 className="mb-2 text-lg font-medium">
+                    {/* PRESUPUESTO TOTAL */}
+                    {!loading && overallProgress && (
+                        <div
+                            className={`overflow-hidden ${theme.card} p-6 shadow-sm sm:rounded-lg`}
+                        >
+                            <h3
+                                className={`mb-2 text-lg font-medium ${theme.heading}`}
+                            >
                                 Presupuesto total
                             </h3>
-                            <div className="h-3 w-full overflow-hidden rounded-full bg-gray-200">
+                            <div
+                                className={`h-3 w-full overflow-hidden rounded-full ${theme.track}`}
+                            >
                                 <div
-                                    className={`h-full ${getOverallBudgetProgress().color} transition-all`}
+                                    className={`h-full ${overallProgress.color} transition-all`}
                                     style={{
-                                        width: `${getOverallBudgetProgress().percentage}%`,
+                                        width: `${overallProgress.percentage}%`,
                                     }}
                                 />
                             </div>
-                            <p className="mt-1 text-sm text-gray-500">
-                                {getOverallBudgetProgress().spent.toFixed(2)}€ de{' '}
-                                {getOverallBudgetProgress().limit.toFixed(2)}€
+                            <p className={`mt-1 text-sm ${theme.muted}`}>
+                                {overallProgress.spent.toFixed(2)}€ de{' '}
+                                {overallProgress.limit.toFixed(2)}€
                             </p>
                         </div>
                     )}
 
                     {/* CATEGORÍAS */}
-                    <div className="overflow-hidden bg-white shadow-sm sm:rounded-lg">
-                        <div className="p-6 text-gray-900">
-                            <h3 className="mb-4 text-lg font-medium">
+                    <div
+                        className={`overflow-hidden ${theme.card} shadow-sm sm:rounded-lg`}
+                    >
+                        <div className={`p-6 ${theme.text}`}>
+                            <h3
+                                className={`mb-4 text-lg font-medium ${theme.heading}`}
+                            >
                                 Categorías
                             </h3>
 
-                           <form
+                            <form
                                 onSubmit={handleCategorySubmit}
-                                className="mb-4 flex flex-col gap-2 sm:flex-row"
+                                className="mb-4 flex flex-col items-start gap-2 sm:flex-row sm:items-center"
                             >
                                 <input
                                     type="text"
@@ -471,7 +554,7 @@ export default function Expenses() {
                                 <button
                                     type="submit"
                                     disabled={submittingCategory}
-                                    className="rounded bg-gray-800 px-4 py-2 text-white disabled:opacity-50"
+                                    className={`rounded px-4 py-2 ${theme.button} ${theme.buttonText} disabled:opacity-50`}
                                 >
                                     {submittingCategory
                                         ? 'Guardando...'
@@ -484,19 +567,26 @@ export default function Expenses() {
                                     {categories.map((category) => (
                                         <li
                                             key={category.id}
-                                            className="flex items-center justify-between rounded border border-gray-200 p-3"
+                                            className={`flex items-center justify-between rounded border ${theme.border} p-3`}
                                         >
                                             {editingCategoryId ===
                                             category.id ? (
                                                 <form
-                                                    onSubmit={handleUpdateCategory}
+                                                    onSubmit={
+                                                        handleUpdateCategory
+                                                    }
                                                     className="flex flex-1 flex-col items-start gap-2 sm:flex-row sm:items-center"
                                                 >
                                                     <input
                                                         type="text"
-                                                        value={editingCategoryName}
+                                                        value={
+                                                            editingCategoryName
+                                                        }
                                                         onChange={(e) =>
-                                                            setEditingCategoryName(e.target.value)
+                                                            setEditingCategoryName(
+                                                                e.target
+                                                                    .value,
+                                                            )
                                                         }
                                                         className="flex-1 rounded border-gray-300 shadow-sm"
                                                         required
@@ -506,9 +596,14 @@ export default function Expenses() {
                                                         type="number"
                                                         step="0.01"
                                                         min="0"
-                                                        value={editingCategoryBudget}
+                                                        value={
+                                                            editingCategoryBudget
+                                                        }
                                                         onChange={(e) =>
-                                                            setEditingCategoryBudget(e.target.value)
+                                                            setEditingCategoryBudget(
+                                                                e.target
+                                                                    .value,
+                                                            )
                                                         }
                                                         placeholder="Límite"
                                                         className="w-32 rounded border-gray-300 shadow-sm"
@@ -522,7 +617,9 @@ export default function Expenses() {
                                                         </button>
                                                         <button
                                                             type="button"
-                                                            onClick={cancelEditingCategory}
+                                                            onClick={
+                                                                cancelEditingCategory
+                                                            }
                                                             className="text-sm text-gray-500 hover:underline"
                                                         >
                                                             Cancelar
@@ -533,11 +630,17 @@ export default function Expenses() {
                                                 <>
                                                     <div className="flex-1 pr-4">
                                                         <div className="flex items-center justify-between">
-                                                            <span>{category.name}</span>
+                                                            <span>
+                                                                {category.name}
+                                                            </span>
                                                         </div>
-                                                        {getBudgetProgress(category) && (
+                                                        {getBudgetProgress(
+                                                            category,
+                                                        ) && (
                                                             <div className="mt-2">
-                                                                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200">
+                                                                <div
+                                                                    className={`h-2 w-full overflow-hidden rounded-full ${theme.track}`}
+                                                                >
                                                                     <div
                                                                         className={`h-full ${getBudgetProgress(category).color} transition-all`}
                                                                         style={{
@@ -545,22 +648,42 @@ export default function Expenses() {
                                                                         }}
                                                                     />
                                                                 </div>
-                                                                <p className="mt-1 text-xs text-gray-500">
-                                                                    {getBudgetProgress(category).spent.toFixed(2)}€ de{' '}
-                                                                    {getBudgetProgress(category).limit.toFixed(2)}€
+                                                                <p
+                                                                    className={`mt-1 text-xs ${theme.muted}`}
+                                                                >
+                                                                    {getBudgetProgress(
+                                                                        category,
+                                                                    ).spent.toFixed(
+                                                                        2,
+                                                                    )}
+                                                                    € de{' '}
+                                                                    {getBudgetProgress(
+                                                                        category,
+                                                                    ).limit.toFixed(
+                                                                        2,
+                                                                    )}
+                                                                    €
                                                                 </p>
                                                             </div>
                                                         )}
                                                     </div>
                                                     <div className="flex gap-3">
                                                         <button
-                                                            onClick={() => startEditingCategory(category)}
+                                                            onClick={() =>
+                                                                startEditingCategory(
+                                                                    category,
+                                                                )
+                                                            }
                                                             className="text-sm text-blue-600 hover:underline"
                                                         >
                                                             Editar
                                                         </button>
                                                         <button
-                                                            onClick={() => handleDeleteCategory(category.id)}
+                                                            onClick={() =>
+                                                                handleDeleteCategory(
+                                                                    category.id,
+                                                                )
+                                                            }
                                                             className="text-sm text-red-600 hover:underline"
                                                         >
                                                             Eliminar
@@ -576,9 +699,13 @@ export default function Expenses() {
                     </div>
 
                     {/* GASTOS */}
-                    <div className="overflow-hidden bg-white shadow-sm sm:rounded-lg">
-                        <div className="p-6 text-gray-900">
-                            <h3 className="mb-4 text-lg font-medium">
+                    <div
+                        className={`overflow-hidden ${theme.card} shadow-sm sm:rounded-lg`}
+                    >
+                        <div className={`p-6 ${theme.text}`}>
+                            <h3
+                                className={`mb-4 text-lg font-medium ${theme.heading}`}
+                            >
                                 Nuevo gasto
                             </h3>
 
@@ -649,7 +776,7 @@ export default function Expenses() {
                                 <button
                                     type="submit"
                                     disabled={submittingExpense}
-                                    className="rounded bg-gray-800 px-4 py-2 text-white disabled:opacity-50"
+                                    className={`rounded px-4 py-2 ${theme.button} ${theme.buttonText} disabled:opacity-50`}
                                 >
                                     {submittingExpense
                                         ? 'Guardando...'
@@ -657,7 +784,9 @@ export default function Expenses() {
                                 </button>
                             </form>
 
-                            <h3 className="mb-4 text-lg font-medium">
+                            <h3
+                                className={`mb-4 text-lg font-medium ${theme.heading}`}
+                            >
                                 Mis gastos
                             </h3>
 
@@ -668,7 +797,7 @@ export default function Expenses() {
                                     {expenses.map((expense) => (
                                         <li
                                             key={expense.id}
-                                            className="rounded border border-gray-200 p-3"
+                                            className={`rounded border ${theme.border} p-3`}
                                         >
                                             {editingExpenseId ===
                                             expense.id ? (
@@ -785,7 +914,9 @@ export default function Expenses() {
                                                         —{' '}
                                                         {expense.description ||
                                                             'Sin descripción'}{' '}
-                                                        <span className="text-sm text-gray-500">
+                                                        <span
+                                                            className={`text-sm ${theme.muted}`}
+                                                        >
                                                             (
                                                             {
                                                                 expense
@@ -827,19 +958,28 @@ export default function Expenses() {
                             {!loading && expensesLastPage > 1 && (
                                 <div className="mt-4 flex items-center justify-center gap-4">
                                     <button
-                                        onClick={() => goToPage(expensesPage - 1)}
+                                        onClick={() =>
+                                            goToPage(expensesPage - 1)
+                                        }
                                         disabled={expensesPage === 1}
-                                        className="text-sm text-gray-600 hover:underline disabled:opacity-30"
+                                        className={`text-sm ${theme.muted} hover:underline disabled:opacity-30`}
                                     >
                                         Anterior
                                     </button>
-                                    <span className="text-sm text-gray-500">
-                                        Página {expensesPage} de {expensesLastPage}
+                                    <span
+                                        className={`text-sm ${theme.muted}`}
+                                    >
+                                        Página {expensesPage} de{' '}
+                                        {expensesLastPage}
                                     </span>
                                     <button
-                                        onClick={() => goToPage(expensesPage + 1)}
-                                        disabled={expensesPage === expensesLastPage}
-                                        className="text-sm text-gray-600 hover:underline disabled:opacity-30"
+                                        onClick={() =>
+                                            goToPage(expensesPage + 1)
+                                        }
+                                        disabled={
+                                            expensesPage === expensesLastPage
+                                        }
+                                        className={`text-sm ${theme.muted} hover:underline disabled:opacity-30`}
                                     >
                                         Siguiente
                                     </button>

@@ -11,6 +11,21 @@ export default function AuthenticatedLayout({ header, children }) {
     const [showingNavigationDropdown, setShowingNavigationDropdown] =
         useState(false);
 
+    const [showingThemeMenu, setShowingThemeMenu] = useState(false);
+
+    const themeOptions = [
+        { key: 'default', label: 'Por defecto' },
+        { key: 'pink', label: 'Rosa pastel' },
+        { key: 'blue', label: 'Azul corporativo' },
+        { key: 'green', label: 'Verde oscuro' },
+    ];
+
+    const selectTheme = (key) => {
+        localStorage.setItem('gastos-theme', key);
+        window.dispatchEvent(new Event('themechange'));
+        setShowingThemeMenu(false);
+    };
+
     return (
         <div className="min-h-screen bg-gray-100">
             <nav className="border-b border-gray-100 bg-white">
@@ -23,7 +38,7 @@ export default function AuthenticatedLayout({ header, children }) {
                                 </Link>
                             </div>
 
-                            <div className="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
+                            <div className="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex sm:items-center">
                                 <NavLink
                                     href={route('dashboard')}
                                     active={route().current('dashboard')}
@@ -36,6 +51,27 @@ export default function AuthenticatedLayout({ header, children }) {
                                 >
                                     Gastos
                                 </NavLink>
+                                <div className="relative">
+                                    <button
+                                        onClick={() => setShowingThemeMenu((prev) => !prev)}
+                                        className="inline-flex items-center border-b-2 border-transparent px-1 pt-1 text-sm font-medium text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                                    >
+                                        Tema
+                                    </button>
+                                    {showingThemeMenu && (
+                                        <div className="absolute z-50 mt-2 w-48 rounded-md bg-white py-1 shadow-lg ring-1 ring-black ring-opacity-5">
+                                            {themeOptions.map((option) => (
+                                                <button
+                                                    key={option.key}
+                                                    onClick={() => selectTheme(option.key)}
+                                                    className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                                                >
+                                                    {option.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
 
