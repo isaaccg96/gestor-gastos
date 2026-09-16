@@ -182,6 +182,20 @@ export default function AuthenticatedLayout({ header, children }) {
                         >
                             Gastos
                         </ResponsiveNavLink>
+                        <div className="border-t border-gray-200 pt-2">
+                            <span className="block px-4 py-1 text-xs font-medium uppercase text-gray-400">
+                                Tema
+                            </span>
+                            {themeOptions.map((option) => (
+                                <button
+                                    key={option.key}
+                                    onClick={() => selectTheme(option.key)}
+                                    className="block w-full px-4 py-2 text-left text-base font-medium text-gray-600 transition duration-150 ease-in-out hover:bg-gray-50 hover:text-gray-800"
+                                >
+                                    {option.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
                     <div className="border-t border-gray-200 pb-1 pt-4">
